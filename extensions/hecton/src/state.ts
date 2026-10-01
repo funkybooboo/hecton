@@ -29,6 +29,9 @@ export interface CostRecord {
 
 export interface HectonState {
   instance?: InstanceRecord;
+  /** Last pi activity while a hecton model was active (epoch ms); anchors
+   * the auto-down idle countdown across pi restarts. */
+  lastHectonActivity?: number;
   ledger: CostRecord[];
 }
 
@@ -49,6 +52,7 @@ export function loadState(): HectonState {
     const parsed = JSON.parse(readFileSync(p, "utf8")) as Partial<HectonState>;
     return {
       instance: parsed.instance,
+      lastHectonActivity: typeof parsed.lastHectonActivity === "number" ? parsed.lastHectonActivity : undefined,
       ledger: Array.isArray(parsed.ledger) ? parsed.ledger : [],
     };
   } catch {

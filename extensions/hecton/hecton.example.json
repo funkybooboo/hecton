@@ -9,6 +9,11 @@
   "maxPricePerHour": 1.2,
   "diskGb": 100,
   "image": "natestott/hecton-server:latest",
+  "autoUp": true,
+  "autoDownIdleMinutes": 60,
+  "warnMinutes": 10,
+  "pullGraceMinutes": 30,
+  "destroyOnQuit": true,
   "models": [
     {
       "id": "qwen3-coder:30b",

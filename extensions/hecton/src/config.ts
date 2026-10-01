@@ -55,6 +55,18 @@ export interface HectonConfig {
   defaultContextWindow: number;
   /** Assumed max output tokens when a model is not in models[]. */
   defaultMaxTokens: number;
+  /** Auto-launch on hecton model selection: true = confirm dialog,
+   * "silent" = launch without asking, false = off. */
+  autoUp: boolean | "silent";
+  /** Idle minutes before auto-destroy. 0 disables auto-down. */
+  autoDownIdleMinutes: number;
+  /** Warning minutes before auto-destroy (footer + notify countdown). */
+  warnMinutes: number;
+  /** Pause the idle countdown for this long after launch / model pull. */
+  pullGraceMinutes: number;
+  /** Destroy the instance when pi really quits (reason "quit" only;
+   * /new, /reload, forks keep it running). */
+  destroyOnQuit: boolean;
 }
 
 const DEFAULTS: HectonConfig = {
@@ -80,6 +92,13 @@ const DEFAULTS: HectonConfig = {
   ],
   defaultContextWindow: 131072,
   defaultMaxTokens: 16384,
+  // Auto lifecycle: the ollama-cloud-parity default UX. Manual commands
+  // remain as escape hatches. First live exercise is the v0.2.0 session.
+  autoUp: true,
+  autoDownIdleMinutes: 60,
+  warnMinutes: 10,
+  pullGraceMinutes: 30,
+  destroyOnQuit: true,
 };
 
 export function configDir(): string {

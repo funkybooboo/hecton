@@ -25,13 +25,14 @@ with a bigger model selection and no subscription rate limits.
 
 ## Status
 
-v0.2.0 development. Offer search is verified against the live API
-(2026-10-01) and `/hecton-check` works without an account; instance
-create/list/destroy still need first-run verification with an API key
-(assumptions tracked in `docs/vast-api-notes.md`). See
-`plans/v0.2.0-first-live-session.md` for the runbook and the
-market-verified tier table (budget $0.47/hr to frontier GLM-5.3 at
-$3.74-4.75/hr).
+v0.2.0 development. Offer search and API-key auth are verified against
+the live API (2026-10-01). The auto lifecycle - auto-up on model
+selection, idle auto-down with warning countdown, destroy-on-quit - is
+implemented and unit-tested; its first live exercise is the remaining
+v0.2.0 work along with the create call and SSH connect
+(`docs/vast-api-notes.md`). See `plans/v0.2.0-first-live-session.md`
+for the runbook and the market-verified tier table (budget $0.47/hr to
+frontier GLM-5.3 at $3.74-4.75/hr).
 
 ## Layout
 
@@ -78,9 +79,24 @@ docker push natestott/hecton-server:latest
 
 ## Usage
 
+**The automated way (default, ollama-cloud parity):** just pick a hecton
+model in `/model` (or Ctrl+P). If no GPU is running, hecton launches the
+cheapest qualifying spot instance (with a one-key confirm; set
+`"autoUp": "silent"` to skip even that), pulls your configured models,
+tunnels it, and you start working. When you stop:
+
+- 60 minutes idle (configurable) -> warning countdown in the footer ->
+  auto-destroy
+- quitting pi destroys the instance immediately (`destroyOnQuit`);
+  `/new`, `/reload`, and forks keep it running
+- something outside pi using the GPU (a curl, another tunnel) pauses the
+  auto-down, and every destroy verifies the instance is actually gone
+
+**Manual escape hatches:**
+
 ```text
 /hecton-up        find the cheapest offer under the cap, launch it,
-                pull configured models, tunnel it
+                  pull configured models, tunnel it
 /hecton-connect   reattach after a spot interruption or pi restart
 /hecton-status    instance / tunnel / models / cost summary
 /hecton-models    list models on the instance; /hecton-models pull <tag>
@@ -89,13 +105,12 @@ docker push natestott/hecton-server:latest
 /hecton-down      destroy the instance and record the cost
 ```
 
-Typical session: `/hecton-up` -> (models pre-pull in the background while you
-start with whatever is ready) -> `/model hecton:qwen3-coder:30b` -> work ->
-`/hecton-down`.
+Typical session: `/model hecton:qwen3-coder:30b` -> confirm launch -> work
+-> close pi (auto-destroy on quit) or `/hecton-down`.
 
 Instance state lives at `~/.pi/agent/hecton/state.json`; pi keeps all
 conversation state locally, so a spot interruption costs nothing but a
-`/hecton-up` relaunch.
+relaunch - reselect the model and auto-up spins a fresh GPU.
 
 ## Model tiers (verified market + weights sizes, 2026-10-01)
 

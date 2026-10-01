@@ -1,9 +1,17 @@
 /**
  * hecton - rent spot GPUs on Vast.ai and serve their models to pi.
  *
- * Commands (flat, kebab-case - idiomatic pi style):
+ * Automated lifecycle (the default UX, ollama-cloud parity):
+ *   - Selecting a hecton model with no GPU running auto-launches one
+ *     (confirm dialog by default, silent via config autoUp).
+ *   - Idle instances auto-destroy after autoDownIdleMinutes (warning
+ *     countdown first; paused during pulls and external use).
+ *   - pi really quitting (session_shutdown reason "quit") destroys the
+ *     instance too (destroyOnQuit); /new, /reload, forks keep it.
+ *
+ * Manual escape hatches (flat, kebab-case - idiomatic pi style):
  *   /hecton-up          search cheapest spot offer under the cap, launch,
- *                     tunnel, and report
+ *                       tunnel, and report
  *   /hecton-down        destroy the instance, stop the tunnel, record cost
  *   /hecton-status      instance/tunnel/model/cost summary
  *   /hecton-connect     (re)attach the tunnel to a recorded instance
@@ -16,11 +24,15 @@
  *        or "apiKey" in the config file.
  * State: ~/.pi/agent/hecton/state.json (instance record + cost ledger).
  *
- * Offer search is VERIFIED against the live API (2026-10-01); instance
- * create/list/destroy are not yet (see docs/vast-api-notes.md).
+ * Offer search is VERIFIED against the live API (2026-10-01); the first
+ * real create/list/destroy exercise is the v0.2.0 session
+ * (docs/vast-api-notes.md). Every destroy verifies the instance actually
+ * disappeared before clearing state, so a failed destroy can never look
+ * like success while billing continues.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { externalUseRecent, idleDecision } from "./src/auto.ts";
 import { estimateCost, formatElapsed, formatUsd, monthlySpend } from "./src/cost.ts";
 import { configPath, loadConfig, resolveApiKey, saveApiKeyToConfig } from "./src/config.ts";
 import { fetchRemoteModels, registerHectonProvider } from "./src/provider.ts";
@@ -57,6 +69,15 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
 
   let tunnel: SshTunnel | undefined;
 
+  // ---------- auto-lifecycle bookkeeping (session-local) ----------
+  let launching = false; // auto-up in-flight guard against double launches
+  let pullingUntil = 0; // epoch ms; idle countdown pauses during pull grace
+  let idleTimer: ReturnType<typeof setInterval> | undefined;
+  let lastActivityMs = 0; // in-memory activity, refreshed by every event
+  let lastPersistedActivity = 0; // state.json write throttle
+  let warnNotified = false; // warn once per idle episode
+  let nextDestroyAttemptAt = 0; // backoff after a failed destroy
+
   const tunnelFor = (inst: InstanceRecord): SshTunnel =>
     new SshTunnel(inst.publicIp, inst.sshPort, cfg.localPort);
 
@@ -86,6 +107,21 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     ctx.ui.setWidget("hecton", [title, ...lines.map((l) => `  ${l}`)]);
   };
 
+  const isHectonModel = (ctx: { model?: { provider?: string } }): boolean =>
+    ctx.model?.provider === cfg.providerId;
+
+  /** Record activity while a hecton model is active; throttled persistence. */
+  const touchActivity = (): void => {
+    lastActivityMs = Date.now();
+    warnNotified = false;
+    if (lastActivityMs - lastPersistedActivity < 30_000) return;
+    lastPersistedActivity = lastActivityMs;
+    const state = loadState();
+    if (!state.instance) return;
+    state.lastHectonActivity = lastActivityMs;
+    saveState(state);
+  };
+
   const clientOrPrompt = async (ctx: CmdCtx): Promise<VastClient | undefined> => {
     let key = resolveApiKey(cfg);
     if (!key) {
@@ -103,6 +139,131 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       saveApiKeyToConfig(key);
     }
     return new VastClient(key);
+  };
+
+  // ---------- shared teardown (manual + idle + quit paths) ----------
+
+  /**
+   * Destroy the recorded instance, verify it actually disappeared from the
+   * provider, then stop the tunnel, record the ledger, and clear state.
+   * A destroy that silently failed must never look like success.
+   */
+  const teardownInstance = async (ctx: CmdCtx, reason: string, verifyPolls = 3): Promise<boolean> => {
+    const state = loadState();
+    const inst = state.instance;
+    if (!inst) return true;
+    const { costUsd, elapsedMs } = estimateCost(inst.pricePerHour, inst.launchedAt);
+    const client = await clientOrPrompt(ctx);
+    if (!client) return false;
+    try {
+      await client.destroyInstance(inst.id);
+    } catch (err) {
+      nextDestroyAttemptAt = Date.now() + 5 * 60_000;
+      ctx.ui.notify(
+        `hecton: destroy failed: ${(err as Error).message} (state kept; retrying later - watch billing)`,
+        "error",
+      );
+      return false;
+    }
+    let gone = false;
+    for (let i = 0; i < verifyPolls; i++) {
+      await sleep(5000);
+      const check = await client.getInstance(inst.id).catch(() => undefined);
+      if (!check) {
+        gone = true;
+        break;
+      }
+    }
+    if (!gone) {
+      nextDestroyAttemptAt = Date.now() + 5 * 60_000;
+      ctx.ui.notify(
+        `hecton: instance ${inst.id} still visible after destroy; billing may continue - check the vast.ai console`,
+        "error",
+      );
+      return false;
+    }
+    tunnel?.stop();
+    tunnel = undefined;
+    state.ledger.push({
+      instanceId: inst.id,
+      startedAt: inst.launchedAt,
+      endedAt: Date.now(),
+      costUsd,
+      note: reason,
+    });
+    state.instance = undefined;
+    state.lastHectonActivity = undefined;
+    saveState(state);
+    if (ctx.hasUI) ctx.ui.setStatus("hecton", undefined);
+    ctx.ui.notify(
+      `hecton: instance destroyed (${reason}). Session ${formatUsd(costUsd)} over ${formatElapsed(elapsedMs)}; month-to-date ${formatUsd(monthlySpend(state.ledger))}.`,
+      "info",
+    );
+    return true;
+  };
+
+  // ---------- idle guard ----------
+
+  const stopIdleTimer = (): void => {
+    if (idleTimer) {
+      clearInterval(idleTimer);
+      idleTimer = undefined;
+    }
+  };
+
+  const tickIdle = async (ctx: CmdCtx): Promise<void> => {
+    const state = loadState();
+    if (!state.instance) {
+      stopIdleTimer();
+      return;
+    }
+    const now = Date.now();
+    if (now < nextDestroyAttemptAt) return;
+    const decision = idleDecision({
+      now,
+      lastActivity: Math.max(state.lastHectonActivity ?? 0, lastActivityMs),
+      launchedAt: state.instance.launchedAt,
+      pullingUntil,
+      autoDownIdleMinutes: cfg.autoDownIdleMinutes,
+      warnMinutes: cfg.warnMinutes,
+    });
+    if (decision.action === "none") {
+      if (warnNotified) updateStatus(ctx);
+      return;
+    }
+    // Never destroy in the first minutes after launch, even if state is odd.
+    if (now - state.instance.launchedAt < 5 * 60_000) return;
+    if (decision.action === "warn") {
+      if (!warnNotified) {
+        warnNotified = true;
+        ctx.ui.notify(
+          `hecton: idle ${Math.round(decision.idleMinutes)} min - auto-destroy in ${Math.round(decision.destroyInMinutes)} min (use the GPU or /hecton-down)`,
+          "warning",
+        );
+      }
+      if (ctx.hasUI) {
+        ctx.ui.setStatus(
+          "hecton",
+          `idle ${Math.round(decision.idleMinutes)}m - auto-destroy in ${Math.round(decision.destroyInMinutes)}m`,
+        );
+      }
+      return;
+    }
+    // Destroy path: something outside this pi session may be using the GPU.
+    if (await externalUseRecent(cfg.localPort)) {
+      touchActivity(); // external use counts as activity; reset the episode
+      return;
+    }
+    const ok = await teardownInstance(ctx, `idle ${Math.round(decision.idleMinutes)} min`);
+    if (ok) stopIdleTimer();
+  };
+
+  const startIdleTimer = (ctx: CmdCtx): void => {
+    if (cfg.autoDownIdleMinutes <= 0) return;
+    stopIdleTimer();
+    idleTimer = setInterval(() => {
+      void tickIdle(ctx).catch(() => {});
+    }, 60_000);
   };
 
   // ---------- command handlers ----------
@@ -134,6 +295,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         lines.push(`API key check FAILED: ${(err as Error).message}`);
       }
     }
+    lines.push(`auto: up=${cfg.autoUp === "silent" ? "silent" : cfg.autoUp ? "confirm" : "off"}, down after ${cfg.autoDownIdleMinutes}m idle, quit=${cfg.destroyOnQuit ? "destroy" : "keep"}`);
     widget(ctx, "hecton check (read-only):", lines);
   };
 
@@ -173,101 +335,118 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     widget(ctx, "hecton connect:", lines);
   };
 
-  const cmdUp = async (ctx: CmdCtx): Promise<void> => {
-    if (!ctx.hasUI) {
+  const cmdUp = async (
+    ctx: CmdCtx,
+    opts: { preconfirmed?: boolean; silent?: boolean } = {},
+  ): Promise<void> => {
+    if (launching) {
+      ctx.ui.notify("hecton: a launch is already in progress", "warning");
+      return;
+    }
+    if (!ctx.hasUI && !opts.silent) {
       ctx.ui.notify("hecton: /hecton-up needs the interactive TUI (it spends money)", "error");
       return;
     }
-    const client = await clientOrPrompt(ctx);
-    if (!client) return;
+    launching = true;
+    try {
+      const client = await clientOrPrompt(ctx);
+      if (!client) return;
 
-    const state = loadState();
-    if (state.instance) {
-      const live = await client.getInstance(state.instance.id).catch(() => undefined);
-      if (live?.running) {
-        const connect = await ctx.ui.confirm(
-          "hecton",
-          `Instance ${state.instance.id} is already running. Connect to it instead?`,
-        );
-        if (connect) await cmdConnect(ctx);
-        return;
+      const state = loadState();
+      if (state.instance) {
+        const live = await client.getInstance(state.instance.id).catch(() => undefined);
+        if (live?.running) {
+          if (opts.silent) {
+            await cmdConnect(ctx);
+            return;
+          }
+          const connect = await ctx.ui.confirm(
+            "hecton",
+            `Instance ${state.instance.id} is already running. Connect to it instead?`,
+          );
+          if (connect) await cmdConnect(ctx);
+          return;
+        }
+        if (!opts.silent) {
+          const relaunch = await ctx.ui.confirm(
+            "hecton",
+            `Recorded instance ${state.instance.id} is not running (${live?.status ?? "gone"}). Launch a fresh one?`,
+          );
+          if (!relaunch) return;
+        }
+        state.instance = undefined;
+        saveState(state);
       }
-      const relaunch = await ctx.ui.confirm(
-        "hecton",
-        `Recorded instance ${state.instance.id} is not running (${live?.status ?? "gone"}). Launch a fresh one?`,
-      );
-      if (!relaunch) return;
-      state.instance = undefined;
-      saveState(state);
-    }
 
-    ctx.ui.setStatus("hecton", `searching ${cfg.gpuName} x${cfg.gpuCount} spot offers...`);
-    let offers;
-    try {
-      offers = await client.searchOffers(offerFilter());
-    } catch (err) {
-      ctx.ui.setStatus("hecton", undefined);
-      ctx.ui.notify(`hecton: offer search failed: ${(err as Error).message}`, "error");
-      return;
-    }
-    const best = pickCheapest(offers, offerFilter(), cfg.maxPricePerHour);
-    if (!best) {
-      const market = offers.slice().sort((a, b) => a.pricePerHour - b.pricePerHour)[0];
-      widget(ctx, "hecton up: nothing under the price cap", [
-        `cap: ${formatUsd(cfg.maxPricePerHour)}/hr`,
-        market
-          ? `cheapest on market: ${market.gpuName} x${market.numGpus} at ${formatUsd(market.pricePerHour)}/hr (id ${market.id})`
-          : "no matching offers at all",
-        "raise maxPricePerHour in ~/.pi/agent/hecton.json to accept",
-      ]);
-      ctx.ui.setStatus("hecton", undefined);
-      return;
-    }
-
-    const ok = await ctx.ui.confirm(
-      "hecton",
-      `Launch ${best.gpuName} x${best.numGpus} (${Math.round(best.gpuRamGb)}GB/GPU) at ${formatUsd(best.pricePerHour)}/hr?`,
-    );
-    if (!ok) {
-      ctx.ui.setStatus("hecton", undefined);
-      return;
-    }
-
-    ctx.ui.setStatus("hecton", "creating instance...");
-    let id: number;
-    try {
-      id = await client.createInstance(best.id, {
-        image: cfg.image,
-        diskGb: cfg.diskGb,
-        models: cfg.models.map((m) => m.id),
-        label: cfg.label,
-      });
-    } catch (err) {
-      ctx.ui.setStatus("hecton", undefined);
-      ctx.ui.notify(`hecton: create failed: ${(err as Error).message}`, "error");
-      return;
-    }
-
-    let inst: VastInstance | undefined;
-    const deadline = Date.now() + POLL_RUNNING_MS;
-    while (Date.now() < deadline) {
-      inst = await client.getInstance(id).catch(() => undefined);
-      if (inst?.running) break;
-      if (inst && /error|exited/i.test(inst.status)) {
+      ctx.ui.setStatus("hecton", `searching ${cfg.gpuName} x${cfg.gpuCount} spot offers...`);
+      let offers;
+      try {
+        offers = await client.searchOffers(offerFilter());
+      } catch (err) {
         ctx.ui.setStatus("hecton", undefined);
-        ctx.ui.notify(`hecton: instance ${id} entered '${inst.status}'; destroying`, "error");
-        await client.destroyInstance(id).catch(() => {});
+        ctx.ui.notify(`hecton: offer search failed: ${(err as Error).message}`, "error");
         return;
       }
-      ctx.ui.setStatus("hecton", `instance ${id}: ${inst?.status ?? "provisioning"}...`);
-      await sleep(POLL_INTERVAL_MS);
-    }
-    if (!inst?.running) {
-      ctx.ui.setStatus("hecton", undefined);
-      ctx.ui.notify(`hecton: instance ${id} did not reach running within 6 min; check /hecton-status`, "error");
-      return;
-    }
-    if (!inst.publicIp || !inst.sshPort) {
+      const best = pickCheapest(offers, offerFilter(), cfg.maxPricePerHour);
+      if (!best) {
+        const market = offers.slice().sort((a, b) => a.pricePerHour - b.pricePerHour)[0];
+        widget(ctx, "hecton up: nothing under the price cap", [
+          `cap: ${formatUsd(cfg.maxPricePerHour)}/hr`,
+          market
+            ? `cheapest on market: ${market.gpuName} x${market.numGpus} at ${formatUsd(market.pricePerHour)}/hr (id ${market.id})`
+            : "no matching offers at all",
+          "raise maxPricePerHour in ~/.pi/agent/hecton.json to accept",
+        ]);
+        ctx.ui.setStatus("hecton", undefined);
+        return;
+      }
+
+      if (!opts.preconfirmed) {
+        const ok = await ctx.ui.confirm(
+          "hecton",
+          `Launch ${best.gpuName} x${best.numGpus} (${Math.round(best.gpuRamGb)}GB/GPU) at ${formatUsd(best.pricePerHour)}/hr?`,
+        );
+        if (!ok) {
+          ctx.ui.setStatus("hecton", undefined);
+          return;
+        }
+      }
+
+      ctx.ui.setStatus("hecton", "creating instance...");
+      let id: number;
+      try {
+        id = await client.createInstance(best.id, {
+          image: cfg.image,
+          diskGb: cfg.diskGb,
+          models: cfg.models.map((m) => m.id),
+          label: cfg.label,
+        });
+      } catch (err) {
+        ctx.ui.setStatus("hecton", undefined);
+        ctx.ui.notify(`hecton: create failed: ${(err as Error).message}`, "error");
+        return;
+      }
+
+      let inst: VastInstance | undefined;
+      const deadline = Date.now() + POLL_RUNNING_MS;
+      while (Date.now() < deadline) {
+        inst = await client.getInstance(id).catch(() => undefined);
+        if (inst?.running) break;
+        if (inst && /error|exited/i.test(inst.status)) {
+          ctx.ui.setStatus("hecton", undefined);
+          ctx.ui.notify(`hecton: instance ${id} entered '${inst.status}'; destroying`, "error");
+          await client.destroyInstance(id).catch(() => {});
+          return;
+        }
+        ctx.ui.setStatus("hecton", `instance ${id}: ${inst?.status ?? "provisioning"}...`);
+        await sleep(POLL_INTERVAL_MS);
+      }
+      if (!inst?.running) {
+        ctx.ui.setStatus("hecton", undefined);
+        ctx.ui.notify(`hecton: instance ${id} did not reach running within 6 min; check /hecton-status`, "error");
+        return;
+      }
+
       state.instance = {
         id,
         publicIp: inst.publicIp ?? "",
@@ -280,66 +459,40 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         gpuCount: best.numGpus,
       };
       saveState(state);
-      ctx.ui.notify(
-        "hecton: instance running but SSH details are not visible yet; retry /hecton-connect shortly",
-        "warning",
-      );
-      return;
-    }
+      if (!inst.publicIp || !inst.sshPort) {
+        ctx.ui.notify(
+          "hecton: instance running but SSH details are not visible yet; retry /hecton-connect shortly",
+          "warning",
+        );
+        return;
+      }
 
-    state.instance = {
-      id,
-      publicIp: inst.publicIp,
-      sshPort: inst.sshPort,
-      pricePerHour: best.pricePerHour,
-      launchedAt: Date.now(),
-      image: cfg.image,
-      diskGb: cfg.diskGb,
-      gpuName: best.gpuName,
-      gpuCount: best.numGpus,
-    };
-    saveState(state);
-    await cmdConnect(ctx);
+      // Models pre-pull in the background after connect; hold the idle
+      // countdown off during that window.
+      pullingUntil = Date.now() + cfg.pullGraceMinutes * 60_000;
+      warnNotified = false;
+      await cmdConnect(ctx);
+      startIdleTimer(ctx);
+    } finally {
+      launching = false;
+    }
   };
 
   const cmdDown = async (ctx: CmdCtx): Promise<void> => {
     const state = loadState();
-    const inst = state.instance;
-    if (!inst) {
+    if (!state.instance) {
       ctx.ui.notify("hecton: no instance to stop", "info");
       return;
     }
-    const { costUsd, elapsedMs } = estimateCost(inst.pricePerHour, inst.launchedAt);
+    const { costUsd, elapsedMs } = estimateCost(state.instance.pricePerHour, state.instance.launchedAt);
     if (ctx.hasUI) {
       const ok = await ctx.ui.confirm(
         "hecton",
-        `Destroy instance ${inst.id}? ~${formatUsd(costUsd)} spent over ${formatElapsed(elapsedMs)}.`,
+        `Destroy instance ${state.instance.id}? ~${formatUsd(costUsd)} spent over ${formatElapsed(elapsedMs)}.`,
       );
       if (!ok) return;
     }
-    const client = await clientOrPrompt(ctx);
-    if (!client) return;
-    try {
-      await client.destroyInstance(inst.id);
-    } catch (err) {
-      ctx.ui.notify(`hecton: destroy failed: ${(err as Error).message} (state kept; retry later)`, "error");
-      return;
-    }
-    tunnel?.stop();
-    tunnel = undefined;
-    state.ledger.push({
-      instanceId: inst.id,
-      startedAt: inst.launchedAt,
-      endedAt: Date.now(),
-      costUsd,
-    });
-    state.instance = undefined;
-    saveState(state);
-    if (ctx.hasUI) ctx.ui.setStatus("hecton", undefined);
-    ctx.ui.notify(
-      `hecton: instance destroyed. Session ${formatUsd(costUsd)}; month-to-date ${formatUsd(monthlySpend(state.ledger))}.`,
-      "info",
-    );
+    await teardownInstance(ctx, "manual");
   };
 
   const cmdStatus = async (ctx: CmdCtx): Promise<void> => {
@@ -347,7 +500,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     const lines: string[] = [];
     const inst = state.instance;
     if (!inst) {
-      lines.push("no instance recorded; run /hecton-up");
+      lines.push("no instance recorded; select a hecton model or run /hecton-up");
     } else {
       const { costUsd, elapsedMs } = estimateCost(inst.pricePerHour, inst.launchedAt);
       lines.push(
@@ -363,6 +516,10 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         const models = await fetchRemoteModels(cfg.localPort);
         lines.push(`remote models: ${models.map((m) => m.id).join(", ") || "(none pulled yet)"}`);
       }
+      const last = Math.max(state.lastHectonActivity ?? 0, inst.launchedAt);
+      lines.push(
+        `auto-down: after ${cfg.autoDownIdleMinutes}m idle (warns ${cfg.warnMinutes}m before); last activity ${formatElapsed(Math.max(0, Date.now() - last))} ago`,
+      );
       const clientKey = resolveApiKey(cfg);
       if (clientKey) {
         const live = await new VastClient(clientKey).getInstance(inst.id).catch(() => undefined);
@@ -382,7 +539,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     const last = state.ledger[state.ledger.length - 1];
     if (last) {
       lines.push(
-        `last: instance ${last.instanceId}, ${formatElapsed(last.endedAt - last.startedAt)}, ${formatUsd(last.costUsd)}`,
+        `last: instance ${last.instanceId}, ${formatElapsed(last.endedAt - last.startedAt)}, ${formatUsd(last.costUsd)}${last.note ? ` (${last.note})` : ""}`,
       );
     }
     if (state.instance) {
@@ -402,6 +559,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         return;
       }
       ctx.ui.setStatus("hecton", `pulling ${tag} (large models take many minutes)...`);
+      pullingUntil = Date.now() + cfg.pullGraceMinutes * 60_000;
       try {
         const res = await fetchWithTimeout(`http://127.0.0.1:${cfg.localPort}/api/pull`, 30 * 60_000, {
           method: "POST",
@@ -418,6 +576,8 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       } catch (err) {
         ctx.ui.setStatus("hecton", statusText());
         ctx.ui.notify(`hecton: pull failed: ${(err as Error).message}`, "error");
+      } finally {
+        pullingUntil = 0;
       }
       return;
     }
@@ -436,6 +596,8 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
 
   pi.on("session_start", async (_event, ctx) => {
     const state = loadState();
+    lastActivityMs = state.lastHectonActivity ?? 0;
+    lastPersistedActivity = lastActivityMs;
     if (!state.instance) return;
     const t = tunnelFor(state.instance);
     try {
@@ -446,7 +608,9 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     const healthy = await t.waitHealthy(20_000, 2500);
     tunnel = healthy ? t : undefined;
     updateStatus(ctx);
-    if (!healthy && ctx.hasUI) {
+    if (healthy) {
+      startIdleTimer(ctx);
+    } else if (ctx.hasUI) {
       ctx.ui.notify(
         `hecton: recorded instance ${state.instance.id} is not reachable; /hecton-status to inspect, /hecton-up to relaunch`,
         "warning",
@@ -454,9 +618,63 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     }
   });
 
-  pi.on("session_shutdown", async () => {
+  /**
+   * AUTO-UP: picking a hecton model (via /model, Ctrl+P cycling, or session
+   * restore) with no healthy endpoint launches an instance automatically.
+   */
+  pi.on("model_select", async (event, ctx) => {
+    const provider = (event.model as { provider?: string } | undefined)?.provider;
+    if (provider !== cfg.providerId) return;
+    touchActivity();
+    if (launching) return;
+    if (tunnel && (await tunnel.healthy(1500))) return;
+    if (typeof (ctx as { isIdle?: () => boolean }).isIdle === "function" && !(ctx as { isIdle: () => boolean }).isIdle()) {
+      ctx.ui.notify("hecton: GPU down; finish the current turn, then reselect the model or /hecton-up", "warning");
+      return;
+    }
+    if (cfg.autoUp === false || (!ctx.hasUI && cfg.autoUp !== "silent")) {
+      if (ctx.hasUI) {
+        ctx.ui.notify("hecton: GPU not running - /hecton-up to launch (auto-up is off)", "warning");
+      }
+      return;
+    }
+    const silent = cfg.autoUp === "silent";
+    if (!silent) {
+      const ok = await ctx.ui.confirm(
+        "hecton",
+        `No GPU running. Launch the cheapest spot instance now? (~${formatUsd(cfg.maxPricePerHour)}/hr cap; auto-destroys after ${cfg.autoDownIdleMinutes} min idle)`,
+      );
+      if (!ok) return;
+    }
+    await cmdUp(ctx, { preconfirmed: true, silent });
+  });
+
+  // Activity tracking: any turn/stream/prompt while a hecton model is
+  // active refreshes the idle countdown.
+  pi.on("turn_start", async (_event, ctx) => {
+    if (isHectonModel(ctx as { model?: { provider?: string } })) touchActivity();
+  });
+  pi.on("message_update", async (_event, ctx) => {
+    if (isHectonModel(ctx as { model?: { provider?: string } })) touchActivity();
+  });
+  pi.on("ui_prompt_start", async (_event, ctx) => {
+    if (isHectonModel(ctx as { model?: { provider?: string } })) touchActivity();
+  });
+
+  pi.on("session_shutdown", async (event, ctx) => {
+    stopIdleTimer();
     tunnel?.stop();
     tunnel = undefined;
+    // Only a real quit ends billing; reload/new/resume/fork keep the GPU
+    // (session_shutdown fires for all of those - event.reason tells them
+    // apart, verified against pi's extension docs).
+    if (event.reason !== "quit" || !cfg.destroyOnQuit) return;
+    const state = loadState();
+    if (!state.instance) return;
+    if (Date.now() < nextDestroyAttemptAt) return;
+    if (!resolveApiKey(cfg)) return; // never block exit on a key prompt
+    // Best effort with a short verify; never hang pi exit.
+    await teardownInstance(ctx, "pi quit", 1).catch(() => {});
   });
 
   pi.registerCommand("hecton-up", {

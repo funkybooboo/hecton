@@ -1,9 +1,52 @@
 import { describe, expect, test } from "bun:test";
+import { idleDecision } from "../extensions/hecton/src/auto.ts";
 import { estimateCost, formatElapsed, formatUsd, monthlySpend } from "../extensions/hecton/src/cost.ts";
 import type { CostRecord } from "../extensions/hecton/src/state.ts";
 import { instanceFromPayload, offersFromBundles, pickCheapest, type Offer } from "../extensions/hecton/src/vast.ts";
 
 const HOUR = 3_600_000;
+const MIN = 60_000;
+
+describe("idleDecision", () => {
+  const base = {
+    now: 10 * HOUR,
+    lastActivity: 10 * HOUR,
+    launchedAt: 0,
+    pullingUntil: 0,
+    autoDownIdleMinutes: 60,
+    warnMinutes: 10,
+  };
+
+  test("disabled when autoDownIdleMinutes is 0", () => {
+    expect(idleDecision({ ...base, autoDownIdleMinutes: 0 }).action).toBe("none");
+  });
+
+  test("recent activity is none", () => {
+    expect(idleDecision({ ...base, now: 10 * HOUR + 5 * MIN }).action).toBe("none");
+  });
+
+  test("warns in the warning window", () => {
+    const d = idleDecision({ ...base, now: 10 * HOUR + 55 * MIN });
+    expect(d.action).toBe("warn");
+    expect(Math.round(d.destroyInMinutes)).toBe(5);
+  });
+
+  test("destroys at the idle threshold", () => {
+    expect(idleDecision({ ...base, now: 10 * HOUR + 61 * MIN }).action).toBe("destroy");
+  });
+
+  test("pull grace pauses the countdown", () => {
+    const d = idleDecision({ ...base, now: 10 * HOUR + 2 * HOUR, pullingUntil: 10 * HOUR + 3 * HOUR });
+    expect(d.action).toBe("none");
+  });
+
+  test("launch time anchors the countdown when there is no activity", () => {
+    const d = idleDecision({ ...base, now: 30 * MIN, lastActivity: 0, launchedAt: 0 });
+    expect(d.action).toBe("none");
+    expect(idleDecision({ ...base, now: 55 * MIN, lastActivity: 0, launchedAt: 0 }).action).toBe("warn");
+    expect(idleDecision({ ...base, now: 61 * MIN, lastActivity: 0, launchedAt: 0 }).action).toBe("destroy");
+  });
+});
 
 describe("estimateCost", () => {
   test("computes elapsed hours and cost", () => {
