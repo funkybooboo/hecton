@@ -40,7 +40,11 @@ export function idleDecision(i: IdleInputs): IdleDecision {
   const idleMinutes = Math.max(0, (i.now - last) / 60_000);
   const destroyInMinutes = Math.max(0, i.autoDownIdleMinutes - idleMinutes);
   if (idleMinutes >= i.autoDownIdleMinutes) return { action: "destroy", idleMinutes, destroyInMinutes: 0 };
-  const warnAt = i.autoDownIdleMinutes - i.warnMinutes;
+  // Clamp the warning window to at most half the idle threshold so tight
+  // thresholds (e.g. 10 min) still get a sane countdown instead of a
+  // permanently-warning footer.
+  const warn = Math.min(i.warnMinutes, Math.floor(i.autoDownIdleMinutes / 2));
+  const warnAt = i.autoDownIdleMinutes - warn;
   if (idleMinutes >= warnAt) return { action: "warn", idleMinutes, destroyInMinutes };
   return { action: "none", idleMinutes, destroyInMinutes };
 }

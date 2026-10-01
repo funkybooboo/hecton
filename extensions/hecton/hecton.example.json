@@ -10,8 +10,8 @@
   "diskGb": 100,
   "image": "natestott/hecton-server:latest",
   "autoUp": true,
-  "autoDownIdleMinutes": 60,
-  "warnMinutes": 10,
+  "autoDownIdleMinutes": 10,
+  "warnMinutes": 5,
   "pullGraceMinutes": 30,
   "destroyOnQuit": true,
   "models": [

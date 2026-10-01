@@ -94,9 +94,11 @@ const DEFAULTS: HectonConfig = {
   defaultMaxTokens: 16384,
   // Auto lifecycle: the ollama-cloud-parity default UX. Manual commands
   // remain as escape hatches. First live exercise is the v0.2.0 session.
+  // Idle threshold 10 min per user preference (2026-10-01): tight, but
+  // destroy-on-quit already covers walking away, and warns at 7 min.
   autoUp: true,
-  autoDownIdleMinutes: 60,
-  warnMinutes: 10,
+  autoDownIdleMinutes: 10,
+  warnMinutes: 5,
   pullGraceMinutes: 30,
   destroyOnQuit: true,
 };

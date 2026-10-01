@@ -85,8 +85,10 @@ cheapest qualifying spot instance (with a one-key confirm; set
 `"autoUp": "silent"` to skip even that), pulls your configured models,
 tunnels it, and you start working. When you stop:
 
-- 60 minutes idle (configurable) -> warning countdown in the footer ->
-  auto-destroy
+- 10 minutes idle (configurable) -> warning countdown in the footer ->
+  auto-destroy (tight threshold per preference; note destroying loses the
+  model cache, so relaunches re-pull - raise `autoDownIdleMinutes` in
+  `~/.pi/agent/hecton.json` if relaunch friction outweighs the savings)
 - quitting pi destroys the instance immediately (`destroyOnQuit`);
   `/new`, `/reload`, and forks keep it running
 - something outside pi using the GPU (a curl, another tunnel) pauses the

@@ -40,6 +40,16 @@ describe("idleDecision", () => {
     expect(d.action).toBe("none");
   });
 
+  test("warn window clamps to half the idle threshold", () => {
+    const tight = { ...base, autoDownIdleMinutes: 10, warnMinutes: 10 };
+    // warn = min(10, floor(10/2)) = 5 -> warns at 5 min idle, destroys at 10
+    expect(idleDecision({ ...tight, now: 10 * HOUR + 4 * MIN }).action).toBe("none");
+    const warn = idleDecision({ ...tight, now: 10 * HOUR + 6 * MIN });
+    expect(warn.action).toBe("warn");
+    expect(Math.round(warn.destroyInMinutes)).toBe(4);
+    expect(idleDecision({ ...tight, now: 10 * HOUR + 11 * MIN }).action).toBe("destroy");
+  });
+
   test("launch time anchors the countdown when there is no activity", () => {
     const d = idleDecision({ ...base, now: 30 * MIN, lastActivity: 0, launchedAt: 0 });
     expect(d.action).toBe("none");
