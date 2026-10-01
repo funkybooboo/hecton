@@ -1,0 +1,25 @@
+{
+  "//": "Copy to ~/.pi/agent/hecton.json. All fields optional; anything omitted uses built-in defaults. Alternatively set VAST_API_KEY in your environment and skip apiKey.",
+  "apiKey": "YOUR_VAST_AI_API_KEY",
+  "providerId": "vast",
+  "localPort": 11435,
+  "gpuName": "H100_SXM",
+  "gpuCount": 1,
+  "minGpuRamGb": 78,
+  "maxPricePerHour": 1.6,
+  "diskGb": 100,
+  "image": "funkybooboo/hecton-server:latest",
+  "models": [
+    {
+      "id": "qwen3-coder:30b",
+      "name": "Qwen3 Coder 30B (vast H100)",
+      "contextWindow": 262144
+    },
+    {
+      "id": "gpt-oss:20b",
+      "name": "GPT-OSS 20B (vast H100)",
+      "reasoning": true,
+      "contextWindow": 131072
+    }
+  ]
+}
