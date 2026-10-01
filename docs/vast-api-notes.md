@@ -72,7 +72,7 @@
 
 1. `/vast-check` - offers already verified live; now also confirms the key
    via the instances list (read-only auth check).
-2. Build + push `funkybooboo/hecton-server:latest` (local CPU smoke test
+2. Build + push `natestott/hecton-server:latest` (local CPU smoke test
    first: server/README.md).
 3. `/vast-up` with default small models; watch instance reach running;
    fix `createInstance`/`instanceFromPayload` if field names drifted.

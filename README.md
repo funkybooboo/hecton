@@ -72,8 +72,8 @@ One-time, on the laptop:
 One-time, for the server image:
 
 ```bash
-docker build -t funkybooboo/hecton-server:latest server/
-docker push funkybooboo/hecton-server:latest
+docker build -t natestott/hecton-server:latest server/
+docker push natestott/hecton-server:latest
 ```
 
 ## Usage

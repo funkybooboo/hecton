@@ -8,7 +8,7 @@
   "minGpuRamGb": 90,
   "maxPricePerHour": 1.2,
   "diskGb": 100,
-  "image": "funkybooboo/hecton-server:latest",
+  "image": "natestott/hecton-server:latest",
   "models": [
     {
       "id": "qwen3-coder:30b",

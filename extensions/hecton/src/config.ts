@@ -70,7 +70,7 @@ const DEFAULTS: HectonConfig = {
   minGpuRamGb: 90,
   maxPricePerHour: 1.2,
   diskGb: 100,
-  image: "funkybooboo/hecton-server:latest",
+  image: "natestott/hecton-server:latest",
   label: "hecton",
   // Real ollama tags that fit comfortably on one 96GB GPU. First-session
   // verification models; tier configs for frontier models live in the plan.

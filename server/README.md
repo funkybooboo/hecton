@@ -6,8 +6,8 @@ serve Ollama on `0.0.0.0:11434` and pre-pull the models you configured.
 ## Build and push
 
 ```bash
-docker build -t funkybooboo/hecton-server:latest .
-docker push funkybooboo/hecton-server:latest
+docker build -t natestott/hecton-server:latest .
+docker push natestott/hecton-server:latest
 ```
 
 The pi extension launches this image by name from `~/.pi/agent/hecton.json`

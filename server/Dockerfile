@@ -1,8 +1,8 @@
 # hecton-server: Ollama image tuned for Vast.ai spot GPU instances.
 #
 # Build and push (see server/README.md):
-#   docker build -t funkybooboo/hecton-server:latest server/
-#   docker push funkybooboo/hecton-server:latest
+#   docker build -t natestott/hecton-server:latest server/
+#   docker push natestott/hecton-server:latest
 #
 # The entrypoint starts sshd (Vast.ai SSH access), runs `ollama serve`, waits
 # for the API, then pre-pulls the comma-separated HECTON_MODELS list.
