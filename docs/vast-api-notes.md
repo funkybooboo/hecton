@@ -39,14 +39,16 @@
 
 ## STILL TO VERIFY (needs a real launch; the /hecton-up runbook)
 
-### Create instance
+### Create instance (VERIFIED to the credit check, 2026-10-01)
 
-- Probed 2026-10-01 with a fake offer id: `PUT /api/v0/asks/<id>/` EXISTS
-  (returns `no_such_ask` for bad ids) and validates args; `/api/v1/asks/` is
-  404. Body assumed:
+- Live create attempt against a real offer: the exact body below passed
+  validation and reached the account check; it failed only with
+  `insufficient_credit` (account had no funds). So path + body shape are
+  correct; the `new_contract` response shape is still unobserved.
+- `PUT /api/v0/asks/<id>/` (v0; `/api/v1/asks/` is 404):
   `{"client_id":"me","image":...,"disk":<gb>,"label":...,"env":{...},"ssh":true,"jupyter":false,"direct":true,"runtype":"ssh"}`
-- Assumed response: `{"new_contract": <instance_id>}`
-- The actual create (real offer, real money) is the one remaining unknown.
+- After adding account credit, the first successful create verifies the
+  response shape for real.
 
 ### Instances (VERIFIED 2026-10-01)
 

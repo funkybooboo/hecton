@@ -107,6 +107,14 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     ctx.ui.setWidget("hecton", [title, ...lines.map((l) => `  ${l}`)]);
   };
 
+  /** Error text including the raw API body when present (VastApiError). */
+  const errDetail = (err: unknown): string => {
+    const e = err as { message?: string; body?: string };
+    let msg = e?.message ?? String(err);
+    if (e?.body) msg += ` - ${e.body}`;
+    return msg;
+  };
+
   const isHectonModel = (ctx: { model?: { provider?: string } }): boolean =>
     ctx.model?.provider === cfg.providerId;
 
@@ -160,7 +168,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     } catch (err) {
       nextDestroyAttemptAt = Date.now() + 5 * 60_000;
       ctx.ui.notify(
-        `hecton: destroy failed: ${(err as Error).message} (state kept; retrying later - watch billing)`,
+        `hecton: destroy failed: ${errDetail(err)} (state kept; retrying later - watch billing)`,
         "error",
       );
       return false;
@@ -281,7 +289,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         .map((o) => `${o.gpuName} x${o.numGpus} ${Math.round(o.gpuRamGb)}GB - ${formatUsd(o.pricePerHour)}/hr (id ${o.id}, disk ${Math.round(o.diskSpaceGb ?? 0)}GB)`);
       lines.push(...(best.length > 0 ? best : ["(no offers matched the config filters)"]));
     } catch (err) {
-      ctx.ui.notify(`hecton check: offer search failed: ${(err as Error).message}`, "error");
+      ctx.ui.notify(`hecton check: offer search failed: ${errDetail(err)}`, "error");
       return;
     }
     const key = resolveApiKey(cfg);
@@ -292,7 +300,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         const instances = await client.listInstances();
         lines.push(`API key OK (auth verified, ${instances.length} existing instance(s))`);
       } catch (err) {
-        lines.push(`API key check FAILED: ${(err as Error).message}`);
+        lines.push(`API key check FAILED: ${errDetail(err)}`);
       }
     }
     lines.push(`auto: up=${cfg.autoUp === "silent" ? "silent" : cfg.autoUp ? "confirm" : "off"}, down after ${cfg.autoDownIdleMinutes}m idle, quit=${cfg.destroyOnQuit ? "destroy" : "keep"}`);
@@ -311,7 +319,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       await t.start();
     } catch (err) {
       ctx.ui.setStatus("hecton", undefined);
-      ctx.ui.notify(`hecton: ssh tunnel failed to start: ${(err as Error).message}`, "error");
+      ctx.ui.notify(`hecton: ssh tunnel failed to start: ${errDetail(err)}`, "error");
       return;
     }
     // The instance may still be provisioning Ollama; give it time.
@@ -384,7 +392,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         offers = await client.searchOffers(offerFilter());
       } catch (err) {
         ctx.ui.setStatus("hecton", undefined);
-        ctx.ui.notify(`hecton: offer search failed: ${(err as Error).message}`, "error");
+        ctx.ui.notify(`hecton: offer search failed: ${errDetail(err)}`, "error");
         return;
       }
       const best = pickCheapest(offers, offerFilter(), cfg.maxPricePerHour);
@@ -423,7 +431,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         });
       } catch (err) {
         ctx.ui.setStatus("hecton", undefined);
-        ctx.ui.notify(`hecton: create failed: ${(err as Error).message}`, "error");
+        ctx.ui.notify(`hecton: create failed: ${errDetail(err)}`, "error");
         return;
       }
 
@@ -575,7 +583,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         ctx.ui.notify(`hecton: pulled ${tag}; run /reload, then /model to select it`, "info");
       } catch (err) {
         ctx.ui.setStatus("hecton", statusText());
-        ctx.ui.notify(`hecton: pull failed: ${(err as Error).message}`, "error");
+        ctx.ui.notify(`hecton: pull failed: ${errDetail(err)}`, "error");
       } finally {
         pullingUntil = 0;
       }
