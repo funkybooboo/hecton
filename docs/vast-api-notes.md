@@ -37,23 +37,25 @@
   4x A100 80GB $3.74/hr, 4x RTX PRO 6000 S $4.75/hr,
   H200 141GB $3.56/hr, B200 179GB $6.25/hr. **No H100s listed at all.**
 
-## STILL TO VERIFY (needs the user's API key; the v0.2.0 runbook)
+## STILL TO VERIFY (needs a real launch; the /hecton-up runbook)
 
 ### Create instance
 
-- Assumed: `PUT /api/v0/asks/<offer_id>/` with body
+- Probed 2026-10-01 with a fake offer id: `PUT /api/v0/asks/<id>/` EXISTS
+  (returns `no_such_ask` for bad ids) and validates args; `/api/v1/asks/` is
+  404. Body assumed:
   `{"client_id":"me","image":...,"disk":<gb>,"label":...,"env":{...},"ssh":true,"jupyter":false,"direct":true,"runtype":"ssh"}`
 - Assumed response: `{"new_contract": <instance_id>}`
-- If this drifted (newer API may use `/api/v0/bundles/request/`), the error
-  body surfaces in the VastApiError message; fix `createInstance` in place.
+- The actual create (real offer, real money) is the one remaining unknown.
 
-### Instances
+### Instances (VERIFIED 2026-10-01)
 
-- Assumed: `GET /api/v0/instances/` -> `{"instances":[...]}`;
-  `DELETE /api/v0/instances/<id>/` destroys.
-- Instance fields assumed: `id`, `label`, `cur_state`/`actual_status`
-  (`running`, `exited`, `error`, provisioning states), `public_ipaddr`,
-  `ports: {"22/tcp": [{"HostPort": <n>}]}`, `dph_total`.
+- `GET /api/v1/instances/` -> `{"instances":[...]}` (empty parse verified;
+  `/api/v0/instances/` returns 410 deprecated_endpoint).
+- `DELETE /api/v1/instances/<id>/` assumed for destroy (same version).
+- Instance field names (`cur_state`, `public_ipaddr`, `ports: {"22/tcp"})
+  still need a live instance to confirm - `instanceFromPayload` reads
+  several fallbacks defensively.
 
 ### SSH
 
@@ -70,14 +72,16 @@
 
 ## v0.2.0 live verification order (read-only first)
 
-1. `/hecton-check` - offers already verified live; now also confirms the key
-   via the instances list (read-only auth check).
-2. Build + push `natestott/hecton-server:latest` (local CPU smoke test
-   first: server/README.md).
+1. DONE 2026-10-01: key auth + instances list (`/api/v1/instances/`),
+   offers search (public, verified format), asks endpoint existence
+   (fake-id probe). Zero-cost verification is complete.
+2. DONE 2026-10-01: `natestott/hecton-server:latest` pushed to Docker Hub
+   (public, pull-able; fully smoke-tested locally first).
 3. `/hecton-up` with default small models; watch instance reach running;
    fix `createInstance`/`instanceFromPayload` if field names drifted.
-4. `/hecton-connect`; if SSH fails, test `ssh -p <port> root@<ip>` manually
-   and check the vast.ai console SSH settings.
+4. `/hecton-connect`; verify SSH/tunnel; if SSH fails, test
+   `ssh -p <port> root@<ip>` manually and check the vast.ai console SSH
+   settings.
 5. `/model hecton:qwen3-coder:30b` - first end-to-end completion.
 6. `/hecton-down` - destroy + cost record; confirm billing stopped on the
    vast.ai console; reconcile the locally recorded cost.

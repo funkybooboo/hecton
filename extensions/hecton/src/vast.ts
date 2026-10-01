@@ -11,9 +11,9 @@
  *   - The "type" filter is pricing-type (on_demand|ask|bid|reserved), NOT
  *     "interruptible" - interruptible is chosen at creation time (v0.3.0).
  *
- * NOT yet verified (needs the user's API key): create instance, list/destroy
- * instances. Those paths/fields are marked below and throw VastApiError with
- * the raw body so drift is fixable in minutes.
+ * NOT yet verified: create instance (probed 2026-10-01: v0 asks path may be
+ * deprecated; see notes). List/destroy VERIFIED on /api/v1/instances/.
+ * Errors carry the raw body so drift is fixable in minutes.
  */
 
 export interface Offer {
@@ -247,7 +247,8 @@ export class VastClient {
   }
 
   async listInstances(): Promise<VastInstance[]> {
-    const payload = (await this.call("/api/v0/instances/")) as Record<string, unknown>;
+    // v1: /api/v0/instances/ returns 410 deprecated_endpoint (verified live).
+    const payload = (await this.call("/api/v1/instances/")) as Record<string, unknown>;
     const arr = payload?.instances;
     if (!Array.isArray(arr)) {
       throw new VastApiError("Unexpected /instances payload", undefined, safeJson(payload));
@@ -260,6 +261,6 @@ export class VastClient {
   }
 
   async destroyInstance(id: number): Promise<void> {
-    await this.call(`/api/v0/instances/${id}/`, { method: "DELETE" });
+    await this.call(`/api/v1/instances/${id}/`, { method: "DELETE" });
   }
 }
