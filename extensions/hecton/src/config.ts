@@ -59,8 +59,8 @@ export interface HectonConfig {
 
 const DEFAULTS: HectonConfig = {
   apiKeyEnv: "VAST_API_KEY",
-  providerId: "vast",
-  providerName: "Hecton (Vast.ai spot GPU)",
+  providerId: "hecton",
+  providerName: "Hecton (rented spot GPU)",
   localPort: 11435,
   // Live market check 2026-10-01: no H100s listed. Value pick is the
   // Blackwell RTX PRO 6000 Max-Q (96GB) at $0.64/hr cheapest; A800 80GB at
@@ -75,8 +75,8 @@ const DEFAULTS: HectonConfig = {
   // Real ollama tags that fit comfortably on one 96GB GPU. First-session
   // verification models; tier configs for frontier models live in the plan.
   models: [
-    { id: "qwen3-coder:30b", name: "Qwen3 Coder 30B (vast GPU)", contextWindow: 262144 },
-    { id: "gpt-oss:20b", name: "GPT-OSS 20B (vast GPU)", reasoning: true, contextWindow: 131072 },
+    { id: "qwen3-coder:30b", name: "Qwen3 Coder 30B (hecton GPU)", contextWindow: 262144 },
+    { id: "gpt-oss:20b", name: "GPT-OSS 20B (hecton GPU)", reasoning: true, contextWindow: 131072 },
   ],
   defaultContextWindow: 131072,
   defaultMaxTokens: 16384,

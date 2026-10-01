@@ -47,11 +47,11 @@ entrypoint path (sshd, serve, wait, pull).
 - **SIGTERM trap**: Vast.ai signals before destroying spot instances; Ollama
   gets a clean shutdown instead of SIGKILL.
 - **Pull failures do not kill the server**; retry from pi with
-  `/vast models pull <tag>`.
+  `/hecton-models pull <tag>`.
 
 ## Verify on a live instance (v0.2.0)
 
-1. `docker run --gpus all` equivalent: launch via `/vast up` and confirm
+1. `docker run --gpus all` equivalent: launch via `/hecton-up` and confirm
    `nvidia-smi` sees the GPU inside the container.
 2. Confirm `ollama pull` writes to the instance disk (`disk` set at create
    time), not an ephemeral layer.

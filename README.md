@@ -18,15 +18,15 @@ with a bigger model selection and no subscription rate limits.
 +--------------+  ssh -L 11435       +------------------------------+
 | pi (laptop)  | ==================> | vast.ai spot GPU (rented)    |
 |              |                     |  hecton-server (Ollama)      |
-| /model vast: | <================== |  qwen3.5, GLM, gpt-oss, ...  |
-| /vast-up     |  OpenAI-compat /v1  +------------------------------+
+| /model hecton: | <================== |  qwen3.5, GLM, gpt-oss, ...  |
+| /hecton-up     |  OpenAI-compat /v1  +------------------------------+
 +--------------+
 ```
 
 ## Status
 
 v0.2.0 development. Offer search is verified against the live API
-(2026-10-01) and `/vast-check` works without an account; instance
+(2026-10-01) and `/hecton-check` works without an account; instance
 create/list/destroy still need first-run verification with an API key
 (assumptions tracked in `docs/vast-api-notes.md`). See
 `plans/v0.2.0-first-live-session.md` for the runbook and the
@@ -79,23 +79,23 @@ docker push natestott/hecton-server:latest
 ## Usage
 
 ```text
-/vast-up        find the cheapest offer under the cap, launch it,
+/hecton-up        find the cheapest offer under the cap, launch it,
                 pull configured models, tunnel it
-/vast-connect   reattach after a spot interruption or pi restart
-/vast-status    instance / tunnel / models / cost summary
-/vast-models    list models on the instance; /vast-models pull <tag>
-/vast-cost      month-to-date spend
-/vast-check     read-only: market prices + API key auth check
-/vast-down      destroy the instance and record the cost
+/hecton-connect   reattach after a spot interruption or pi restart
+/hecton-status    instance / tunnel / models / cost summary
+/hecton-models    list models on the instance; /hecton-models pull <tag>
+/hecton-cost      month-to-date spend
+/hecton-check     read-only: market prices + API key auth check
+/hecton-down      destroy the instance and record the cost
 ```
 
-Typical session: `/vast-up` -> (models pre-pull in the background while you
-start with whatever is ready) -> `/model vast:qwen3-coder:30b` -> work ->
-`/vast-down`.
+Typical session: `/hecton-up` -> (models pre-pull in the background while you
+start with whatever is ready) -> `/model hecton:qwen3-coder:30b` -> work ->
+`/hecton-down`.
 
 Instance state lives at `~/.pi/agent/hecton/state.json`; pi keeps all
 conversation state locally, so a spot interruption costs nothing but a
-`/vast-up` relaunch.
+`/hecton-up` relaunch.
 
 ## Model tiers (verified market + weights sizes, 2026-10-01)
 

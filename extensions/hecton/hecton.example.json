@@ -1,7 +1,7 @@
 {
   "//": "Copy to ~/.pi/agent/hecton.json. All fields optional; anything omitted uses built-in defaults. The API key is read from VAST_API_KEY, or ~/.pi/agent/hecton/.env (VAST_API_KEY=...), or the apiKey field here.",
   "apiKey": "YOUR_VAST_AI_API_KEY",
-  "providerId": "vast",
+  "providerId": "hecton",
   "localPort": 11435,
   "gpuName": "RTX PRO 6000 Max-Q",
   "gpuCount": 1,
@@ -12,12 +12,12 @@
   "models": [
     {
       "id": "qwen3-coder:30b",
-      "name": "Qwen3 Coder 30B (vast GPU)",
+      "name": "Qwen3 Coder 30B (hecton GPU)",
       "contextWindow": 262144
     },
     {
       "id": "gpt-oss:20b",
-      "name": "GPT-OSS 20B (vast GPU)",
+      "name": "GPT-OSS 20B (hecton GPU)",
       "reasoning": true,
       "contextWindow": 131072
     }

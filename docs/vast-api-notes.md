@@ -70,14 +70,14 @@
 
 ## v0.2.0 live verification order (read-only first)
 
-1. `/vast-check` - offers already verified live; now also confirms the key
+1. `/hecton-check` - offers already verified live; now also confirms the key
    via the instances list (read-only auth check).
 2. Build + push `natestott/hecton-server:latest` (local CPU smoke test
    first: server/README.md).
-3. `/vast-up` with default small models; watch instance reach running;
+3. `/hecton-up` with default small models; watch instance reach running;
    fix `createInstance`/`instanceFromPayload` if field names drifted.
-4. `/vast-connect`; if SSH fails, test `ssh -p <port> root@<ip>` manually
+4. `/hecton-connect`; if SSH fails, test `ssh -p <port> root@<ip>` manually
    and check the vast.ai console SSH settings.
-5. `/model vast:qwen3-coder:30b` - first end-to-end completion.
-6. `/vast-down` - destroy + cost record; confirm billing stopped on the
+5. `/model hecton:qwen3-coder:30b` - first end-to-end completion.
+6. `/hecton-down` - destroy + cost record; confirm billing stopped on the
    vast.ai console; reconcile the locally recorded cost.

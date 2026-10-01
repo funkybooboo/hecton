@@ -49,7 +49,7 @@ SERVE_PID=$!
             if ollama pull "$m"; then
                 log "pull done: $m"
             else
-                log "pull FAILED: $m (server stays up; retry via /vast-models pull)"
+                log "pull FAILED: $m (server stays up; retry via /hecton-models pull)"
             fi
         done
     else
