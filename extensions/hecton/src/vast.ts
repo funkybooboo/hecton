@@ -1,12 +1,19 @@
 /**
  * Vast.ai REST client (console.vast.ai, API v0).
  *
- * IMPORTANT: endpoint paths, query fields, and payload shapes below are
- * written from training knowledge and are NOT yet verified against the live
- * API. Every assumption is listed in docs/vast-api-notes.md with a v0.2.0
- * verification checklist. The parsing helpers are defensive on purpose: they
- * read multiple candidate field names and throw VastApiError carrying the raw
- * body so a live session can fix drift in minutes.
+ * VERIFIED 2026-10-01 (live, see docs/vast-api-notes.md):
+ *   - Search: GET /api/v0/bundles/?q=<url-encoded-json>  (PUBLIC, no auth)
+ *     q fields are operator dicts: {"gpu_ram":{"gte":<MB>},"num_gpus":
+ *     {"eq":<n>},"rentable":{"eq":true},"order":[["dph_total","asc"]]}
+ *     Response: {"offers": [...], "truncated": bool}. Sorted ascending, so
+ *     even when truncated at 64 results the cheapest offers are included.
+ *     gpu_ram is MB; disk_space is GB.
+ *   - The "type" filter is pricing-type (on_demand|ask|bid|reserved), NOT
+ *     "interruptible" - interruptible is chosen at creation time (v0.3.0).
+ *
+ * NOT yet verified (needs the user's API key): create instance, list/destroy
+ * instances. Those paths/fields are marked below and throw VastApiError with
+ * the raw body so drift is fixable in minutes.
  */
 
 export interface Offer {
@@ -15,6 +22,7 @@ export interface Offer {
   numGpus: number;
   gpuRamGb: number;
   pricePerHour: number;
+  diskSpaceGb?: number;
   reliability?: number;
   inetDownMbps?: number;
   rentable?: boolean;
@@ -24,7 +32,8 @@ export interface OfferFilter {
   gpuName: string;
   gpuCount: number;
   minGpuRamGb: number;
-  interruptible: boolean;
+  /** Host must be able to allocate at least this much instance disk. */
+  minDiskGb: number;
 }
 
 export interface CreateInstanceOpts {
@@ -93,6 +102,7 @@ export function offersFromBundles(payload: unknown): Offer[] {
       numGpus: num(o.num_gpus),
       gpuRamGb: toGb(o.gpu_ram),
       pricePerHour: num(o.dph_total),
+      diskSpaceGb: num(o.disk_space) || undefined,
       reliability: num(o.reliability) || undefined,
       inetDownMbps: num(o.inet_down) || undefined,
       rentable: o.rentable === true,
@@ -114,6 +124,7 @@ export function pickCheapest(offers: Offer[], filter: OfferFilter, maxPricePerHo
     .filter((o) => gpuMatches(filter.gpuName, o.gpuName))
     .filter((o) => o.numGpus === filter.gpuCount)
     .filter((o) => o.gpuRamGb >= filter.minGpuRamGb)
+    .filter((o) => o.diskSpaceGb == null || o.diskSpaceGb >= filter.minDiskGb)
     .filter((o) => o.rentable !== false)
     .filter((o) => (o.reliability ?? 1) >= 0.95)
     .filter((o) => o.pricePerHour > 0 && o.pricePerHour <= maxPricePerHour);
@@ -157,8 +168,9 @@ function safeJson(x: unknown): string {
 // ---------- REST client ----------
 
 export class VastClient {
+  /** Search is public; instance lifecycle calls require the key. */
   constructor(
-    readonly apiKey: string,
+    readonly apiKey: string | undefined,
     readonly baseUrl: string = "https://console.vast.ai",
   ) {}
 
@@ -168,7 +180,7 @@ export class VastClient {
       res = await fetch(`${this.baseUrl}${path}`, {
         ...init,
         headers: {
-          Authorization: `Bearer ${this.apiKey}`,
+          ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
           "Content-Type": "application/json",
           ...(init?.headers as Record<string, string> | undefined),
         },
@@ -188,19 +200,20 @@ export class VastClient {
   }
 
   /**
-   * Search spot (interruptible) or on-demand offers.
-   * The `q` query format is a VERIFY item in docs/vast-api-notes.md.
+   * Search offers. Verified query format (2026-10-01): field filters are
+   * operator dicts, order is a list of [field, direction] tuples. GPU name
+   * matching stays client-side so broad config values ("RTX PRO 6000")
+ * keep working; the server-side sort guarantees the cheapest eligible
+   * offers are inside the (capped) result set.
    */
   async searchOffers(filter: OfferFilter): Promise<Offer[]> {
     const q = {
-      gpu_name: filter.gpuName,
-      num_gpus: filter.gpuCount,
-      gpu_ram: `>= ${filter.minGpuRamGb * 1024}`,
-      type: filter.interruptible ? "interruptible" : "on-demand",
-      rentable: true,
-      order: "dph_total",
+      num_gpus: { eq: filter.gpuCount },
+      gpu_ram: { gte: Math.round(filter.minGpuRamGb * 1024) },
+      rentable: { eq: true },
+      order: [["dph_total", "asc"]],
     };
-    const payload = await this.call(`/api/v0/bundles?q=${encodeURIComponent(JSON.stringify(q))}`);
+    const payload = await this.call(`/api/v0/bundles/?q=${encodeURIComponent(JSON.stringify(q))}`);
     return offersFromBundles(payload);
   }
 
@@ -213,7 +226,9 @@ export class VastClient {
       label: opts.label,
       env: {
         OLLAMA_HOST: "0.0.0.0:11434",
-        OLLAMA_MODELS: opts.models.join(","),
+        // HECTON_* not OLLAMA_*: OLLAMA_MODELS is reserved by ollama (its
+        // models storage dir); the server entrypoint reads HECTON_MODELS.
+        HECTON_MODELS: opts.models.join(","),
       },
       ssh: true,
       jupyter: false,

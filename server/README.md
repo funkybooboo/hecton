@@ -17,18 +17,18 @@ The pi extension launches this image by name from `~/.pi/agent/hecton.json`
 
 | Variable          | Default             | Meaning                                        |
 |-------------------|---------------------|------------------------------------------------|
-| `OLLAMA_MODELS`   | (empty)             | Comma-separated ollama tags to pre-pull on boot |
+| `HECTON_MODELS`   | (empty)             | Comma-separated ollama tags to pre-pull on boot (NOT `OLLAMA_MODELS`, which ollama reserves for its storage dir) |
 | `OLLAMA_HOST`     | `0.0.0.0:11434`     | Bind address (do not change on Vast.ai)        |
 | `OLLAMA_KEEP_ALIVE` | `30m`              | Keep models warm between requests              |
 
-The pi extension passes `OLLAMA_MODELS` at instance-create time from the
+The pi extension passes `HECTON_MODELS` at instance-create time from the
 configured model list.
 
 ## Local smoke test (no GPU needed)
 
 ```bash
 docker build -t hecton-server:local .
-docker run --rm -p 11434:11434 -e OLLAMA_MODELS=qwen2.5:0.5b hecton-server:local
+docker run --rm -p 11434:11434 -e HECTON_MODELS=qwen2.5:0.5b hecton-server:local
 # in another shell:
 curl -s http://localhost:11434/v1/models
 ```

@@ -11,7 +11,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
 export interface ModelConfig {
   /** Ollama model tag, e.g. "qwen3-coder:30b". */
   id: string;
@@ -50,7 +49,7 @@ export interface HectonConfig {
   image: string;
   /** Instance label on vast.ai. */
   label: string;
-  /** Fallback + pre-pull model list; comma-joined into OLLAMA_MODELS. */
+  /** Fallback + pre-pull model list; comma-joined into HECTON_MODELS. */
   models: ModelConfig[];
   /** Assumed context window when a model is not in models[]. */
   defaultContextWindow: number;
@@ -63,18 +62,21 @@ const DEFAULTS: HectonConfig = {
   providerId: "vast",
   providerName: "Hecton (Vast.ai spot GPU)",
   localPort: 11435,
-  gpuName: "H100_SXM",
+  // Live market check 2026-10-01: no H100s listed. Value pick is the
+  // Blackwell RTX PRO 6000 Max-Q (96GB) at $0.64/hr cheapest; A800 80GB at
+  // $0.47/hr is the budget alternative (see plans/v0.2.0 tier table).
+  gpuName: "RTX PRO 6000 Max-Q",
   gpuCount: 1,
-  minGpuRamGb: 78,
-  maxPricePerHour: 1.6,
+  minGpuRamGb: 90,
+  maxPricePerHour: 1.2,
   diskGb: 100,
   image: "funkybooboo/hecton-server:latest",
   label: "hecton",
-  // Real ollama tags that fit comfortably on one 80GB H100. Swap for
-  // frontier models after the v0.2.0 live check.
+  // Real ollama tags that fit comfortably on one 96GB GPU. First-session
+  // verification models; tier configs for frontier models live in the plan.
   models: [
-    { id: "qwen3-coder:30b", name: "Qwen3 Coder 30B (vast H100)", contextWindow: 262144 },
-    { id: "gpt-oss:20b", name: "GPT-OSS 20B (vast H100)", reasoning: true, contextWindow: 131072 },
+    { id: "qwen3-coder:30b", name: "Qwen3 Coder 30B (vast GPU)", contextWindow: 262144 },
+    { id: "gpt-oss:20b", name: "GPT-OSS 20B (vast GPU)", reasoning: true, contextWindow: 131072 },
   ],
   defaultContextWindow: 131072,
   defaultMaxTokens: 16384,
@@ -89,7 +91,40 @@ export function configPath(): string {
 }
 
 export function resolveApiKey(cfg: HectonConfig): string | undefined {
-  return cfg.apiKey ?? process.env[cfg.apiKeyEnv];
+  // Priority: real env var > ~/.pi/agent/hecton/.env > config-file apiKey.
+  const fromEnv = process.env[cfg.apiKeyEnv];
+  if (fromEnv) return fromEnv;
+  const fromFile = readEnvFile()[cfg.apiKeyEnv];
+  if (fromFile) return fromFile;
+  return cfg.apiKey;
+}
+
+/**
+ * Minimal KEY=VALUE parser for ~/.pi/agent/hecton/.env (the recommended
+ * secure home for the Vast.ai key: outside any repo, chmod 600). pi does
+ * not auto-load .env files, so hecton reads this itself.
+ */
+function readEnvFile(): Record<string, string> {
+  const path = join(homedir(), ".pi", "agent", "hecton", ".env");
+  const out: Record<string, string> = {};
+  if (!existsSync(path)) return out;
+  try {
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      let value = trimmed.slice(eq + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      out[key] = value;
+    }
+  } catch {
+    // Unreadable .env: ignore, fall through to other sources.
+  }
+  return out;
 }
 
 export function loadConfig(): HectonConfig {

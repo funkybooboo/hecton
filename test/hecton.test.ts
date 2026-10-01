@@ -49,14 +49,15 @@ describe("offersFromBundles", () => {
   test("parses offers defensively, converting gpu_ram MB to GB", () => {
     const offers = offersFromBundles({
       offers: [
-        { id: 11, gpu_name: "H100_SXM", num_gpus: 1, gpu_ram: 79872, dph_total: 1.23, rentable: true },
+        { id: 11, gpu_name: "H100_SXM", num_gpus: 1, gpu_ram: 79872, dph_total: 1.23, rentable: true, disk_space: 280 },
         { id: 12, gpu_name: "H100_SXM", num_gpus: 2, gpu_ram: 80, dph_total: 2.5, rentable: true },
         { bad: true },
       ],
     });
     expect(offers.length).toBe(2); // id-less entry dropped
-    expect(offers[0]).toMatchObject({ id: 11, gpuRamGb: 78, pricePerHour: 1.23 });
+    expect(offers[0]).toMatchObject({ id: 11, gpuRamGb: 78, pricePerHour: 1.23, diskSpaceGb: 280 });
     expect(offers[1].gpuRamGb).toBe(80); // already-GB values pass through
+    expect(offers[1].diskSpaceGb).toBeUndefined(); // missing disk is fine
   });
 
   test("throws VastApiError with body snippet on bad payload", () => {
@@ -65,13 +66,14 @@ describe("offersFromBundles", () => {
 });
 
 describe("pickCheapest", () => {
-  const filter = { gpuName: "H100_SXM", gpuCount: 1, minGpuRamGb: 78, interruptible: true };
+  const filter = { gpuName: "H100_SXM", gpuCount: 1, minGpuRamGb: 78, minDiskGb: 50 };
   const mk = (over: Partial<Offer>): Offer => ({
     id: 1,
     gpuName: "H100_SXM",
     numGpus: 1,
     gpuRamGb: 80,
     pricePerHour: 1.4,
+    diskSpaceGb: 200,
     rentable: true,
     ...over,
   });
@@ -86,15 +88,21 @@ describe("pickCheapest", () => {
     expect(pickCheapest(offers, filter, 1.6)).toBeUndefined();
   });
 
-  test("filters by gpu count, ram, rentable, reliability", () => {
+  test("filters by gpu count, ram, disk, rentable, reliability", () => {
     const offers = [
       mk({ id: 10, numGpus: 2 }),
       mk({ id: 11, gpuRamGb: 40 }),
+      mk({ id: 15, diskSpaceGb: 24 }),
       mk({ id: 12, rentable: false }),
       mk({ id: 13, reliability: 0.8 }),
       mk({ id: 14, gpuName: "RTX4090" }),
     ];
     expect(pickCheapest(offers, filter, 2)).toBeUndefined();
+  });
+
+  test("offers with unknown disk size are not excluded", () => {
+    const offers = [mk({ id: 16, diskSpaceGb: undefined })];
+    expect(pickCheapest(offers, filter, 2)?.id).toBe(16);
   });
 
   test("gpu name matching: broad config matches specific offers, not vice versa", () => {

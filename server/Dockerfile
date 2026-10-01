@@ -5,9 +5,9 @@
 #   docker push funkybooboo/hecton-server:latest
 #
 # The entrypoint starts sshd (Vast.ai SSH access), runs `ollama serve`, waits
-# for the API, then pre-pulls the comma-separated OLLAMA_MODELS list.
+# for the API, then pre-pulls the comma-separated HECTON_MODELS list.
 
-FROM ollama/ollama:latest
+FROM docker.io/ollama/ollama:latest
 
 USER root
 
@@ -19,7 +19,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 ENV OLLAMA_HOST=0.0.0.0:11434 \
-    OLLAMA_MODELS="" \
+    HECTON_MODELS="" \
     OLLAMA_KEEP_ALIVE=30m
 
 COPY entrypoint.sh /usr/local/bin/hecton-entrypoint

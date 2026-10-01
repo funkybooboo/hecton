@@ -4,7 +4,9 @@
 # Responsibilities:
 #   1. Start sshd so Vast.ai's SSH connection path works (best effort).
 #   2. Run `ollama serve` (listens on 0.0.0.0:11434 via OLLAMA_HOST).
-#   3. Wait for the API, then pre-pull OLLAMA_MODELS (comma-separated tags).
+#   3. Wait for the API, then pre-pull HECTON_MODELS (comma-separated tags).
+#      HECTON_* not OLLAMA_*: OLLAMA_MODELS is reserved by ollama itself
+#      (models storage directory); reusing it corrupts ollama's config.
 #   4. Trap SIGTERM so spot interruptions (vast.ai sends SIGTERM before
 #      destroying) shut Ollama down cleanly.
 #
@@ -37,9 +39,9 @@ SERVE_PID=$!
         sleep 2
     done
 
-    if [ -n "${OLLAMA_MODELS:-}" ]; then
+    if [ -n "${HECTON_MODELS:-}" ]; then
         IFS=','
-        for m in ${OLLAMA_MODELS}; do
+        for m in ${HECTON_MODELS}; do
             # Trim whitespace; skip empties.
             m="$(echo "$m" | xargs)"
             [ -z "$m" ] && continue
@@ -47,11 +49,11 @@ SERVE_PID=$!
             if ollama pull "$m"; then
                 log "pull done: $m"
             else
-                log "pull FAILED: $m (server stays up; retry via /vast models pull)"
+                log "pull FAILED: $m (server stays up; retry via /vast-models pull)"
             fi
         done
     else
-        log "OLLAMA_MODELS empty; no pre-pull"
+        log "HECTON_MODELS empty; no pre-pull"
     fi
 ) &
 
@@ -64,5 +66,5 @@ term() {
 }
 trap term TERM INT
 
-log "ready - Ollama API on :11434, OLLAMA_MODELS=[${OLLAMA_MODELS:-}]"
+log "ready - Ollama API on :11434, HECTON_MODELS=[${HECTON_MODELS:-}]"
 wait "$SERVE_PID"

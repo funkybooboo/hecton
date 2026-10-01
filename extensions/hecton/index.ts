@@ -1,21 +1,23 @@
 /**
- * hecton - rent spot H100 GPUs on Vast.ai and serve their models to pi.
+ * hecton - rent spot GPUs on Vast.ai and serve their models to pi.
  *
- * Commands (run `/vast` with no args for usage):
- *   /vast up          search cheapest spot offer under the cap, launch,
+ * Commands (flat, kebab-case - idiomatic pi style):
+ *   /vast-up          search cheapest spot offer under the cap, launch,
  *                     tunnel, and report
- *   /vast down        destroy the instance, stop the tunnel, record cost
- *   /vast status      instance/tunnel/model/cost summary
- *   /vast connect     (re)attach the tunnel to a recorded instance
- *   /vast check       read-only: verify API key, show cheapest offers
- *   /vast cost        month-to-date spend from the local ledger
- *   /vast models      list remote models; `/vast models pull <tag>` pulls one
+ *   /vast-down        destroy the instance, stop the tunnel, record cost
+ *   /vast-status      instance/tunnel/model/cost summary
+ *   /vast-connect     (re)attach the tunnel to a recorded instance
+ *   /vast-check       read-only: offers (public API) + key auth check
+ *   /vast-cost        month-to-date spend from the local ledger
+ *   /vast-models      list remote models; `/vast-models pull <tag>` pulls one
  *
  * Config: ~/.pi/agent/hecton.json (see hecton.example.json).
- * State:  ~/.pi/agent/hecton/state.json (instance record + cost ledger).
+ * Key:   VAST_API_KEY env var, or ~/.pi/agent/hecton/.env (KEY=VALUE),
+ *        or "apiKey" in the config file.
+ * State: ~/.pi/agent/hecton/state.json (instance record + cost ledger).
  *
- * v0.1.0: all Vast.ai REST calls are implemented but not yet verified
- * against the live API (see docs/vast-api-notes.md).
+ * Offer search is VERIFIED against the live API (2026-10-01); instance
+ * create/list/destroy are not yet (see docs/vast-api-notes.md).
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -26,17 +28,6 @@ import type { InstanceRecord } from "./src/state.ts";
 import { loadState, saveState } from "./src/state.ts";
 import { SshTunnel, fetchWithTimeout, sleep } from "./src/tunnel.ts";
 import { pickCheapest, VastClient, type OfferFilter, type VastInstance } from "./src/vast.ts";
-
-const USAGE = [
-  "hecton usage:",
-  "  /vast up            launch cheapest spot GPU under the price cap, tunnel it",
-  "  /vast down          destroy instance, record cost",
-  "  /vast status        instance / tunnel / models / cost summary",
-  "  /vast connect       (re)attach tunnel to the recorded instance",
-  "  /vast check         read-only: verify API key + show cheapest offers",
-  "  /vast cost          month-to-date spend",
-  "  /vast models        list remote models; /vast models pull <tag> pulls one",
-].join("\n");
 
 const POLL_RUNNING_MS = 6 * 60_000;
 const POLL_INTERVAL_MS = 10_000;
@@ -73,7 +64,8 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     gpuName: cfg.gpuName,
     gpuCount: cfg.gpuCount,
     minGpuRamGb: cfg.minGpuRamGb,
-    interruptible: true,
+    // Headroom above the configured instance disk for the model cache.
+    minDiskGb: cfg.diskGb + 15,
   });
 
   const statusText = (): string | undefined => {
@@ -116,23 +108,33 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
   // ---------- command handlers ----------
 
   const cmdCheck = async (ctx: CmdCtx): Promise<void> => {
-    const client = await clientOrPrompt(ctx);
-    if (!client) return;
+    // Offer search is public, so this works before any key is configured.
+    const client = new VastClient(resolveApiKey(cfg));
+    const lines: string[] = [];
     try {
       const offers = await client.searchOffers(offerFilter());
-      const cheapest = offers
+      const best = offers
         .slice()
         .sort((a, b) => a.pricePerHour - b.pricePerHour)
         .slice(0, 5)
-        .map((o) => `${o.gpuName} x${o.numGpus} ${Math.round(o.gpuRamGb)}GB - ${formatUsd(o.pricePerHour)}/hr (id ${o.id})`);
-      widget(
-        ctx,
-        "vast check: authenticated, cheapest offers:",
-        cheapest.length > 0 ? cheapest : ["(no offers matched)"],
-      );
+        .map((o) => `${o.gpuName} x${o.numGpus} ${Math.round(o.gpuRamGb)}GB - ${formatUsd(o.pricePerHour)}/hr (id ${o.id}, disk ${Math.round(o.diskSpaceGb ?? 0)}GB)`);
+      lines.push(...(best.length > 0 ? best : ["(no offers matched the config filters)"]));
     } catch (err) {
-      ctx.ui.notify(`hecton check failed: ${(err as Error).message}`, "error");
+      ctx.ui.notify(`hecton check: offer search failed: ${(err as Error).message}`, "error");
+      return;
     }
+    const key = resolveApiKey(cfg);
+    if (!key) {
+      lines.push("no API key configured - set VAST_API_KEY or ~/.pi/agent/hecton/.env (search is public; launching needs the key)");
+    } else {
+      try {
+        const instances = await client.listInstances();
+        lines.push(`API key OK (auth verified, ${instances.length} existing instance(s))`);
+      } catch (err) {
+        lines.push(`API key check FAILED: ${(err as Error).message}`);
+      }
+    }
+    widget(ctx, "vast check (read-only):", lines);
   };
 
   const cmdConnect = async (ctx: CmdCtx): Promise<void> => {
@@ -368,6 +370,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       }
     }
     lines.push(`month-to-date spend: ${formatUsd(monthlySpend(state.ledger))}`);
+    lines.push("commands: /vast-up /vast-down /vast-connect /vast-check /vast-cost /vast-models");
     widget(ctx, "vast status", lines);
   };
 
@@ -456,46 +459,33 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     tunnel = undefined;
   });
 
-  pi.registerCommand("vast", {
-    description: "hecton: rent a spot GPU (up/down/status/connect/check/cost/models)",
-    handler: async (args, ctx) => {
-      const parts = (args ?? "").trim().split(/\s+/).filter(Boolean);
-      const action = parts[0] ?? "status";
-      const rest = parts.slice(1);
-      try {
-        switch (action) {
-          case "up":
-          case "launch":
-            await cmdUp(ctx);
-            break;
-          case "down":
-          case "destroy":
-            await cmdDown(ctx);
-            break;
-          case "status":
-            await cmdStatus(ctx);
-            break;
-          case "connect":
-            await cmdConnect(ctx);
-            break;
-          case "check":
-            await cmdCheck(ctx);
-            break;
-          case "cost":
-            await cmdCost(ctx);
-            break;
-          case "models":
-            await cmdModels(ctx, rest);
-            break;
-          case "help":
-            widget(ctx, "hecton", USAGE.split("\n"));
-            break;
-          default:
-            ctx.ui.notify(USAGE, "info");
-        }
-      } catch (err) {
-        ctx.ui.notify(`hecton: ${action} failed: ${(err as Error).message}`, "error");
-      }
-    },
+  pi.registerCommand("vast-up", {
+    description: "hecton: launch the cheapest spot GPU under the price cap",
+    handler: async (_args, ctx) => cmdUp(ctx),
+  });
+  pi.registerCommand("vast-down", {
+    description: "hecton: destroy the rented instance and record the cost",
+    handler: async (_args, ctx) => cmdDown(ctx),
+  });
+  pi.registerCommand("vast-status", {
+    description: "hecton: instance, tunnel, models, and cost summary",
+    handler: async (_args, ctx) => cmdStatus(ctx),
+  });
+  pi.registerCommand("vast-connect", {
+    description: "hecton: reattach the tunnel to the recorded instance",
+    handler: async (_args, ctx) => cmdConnect(ctx),
+  });
+  pi.registerCommand("vast-check", {
+    description: "hecton: read-only market check (offers + API key auth)",
+    handler: async (_args, ctx) => cmdCheck(ctx),
+  });
+  pi.registerCommand("vast-cost", {
+    description: "hecton: month-to-date GPU spend",
+    handler: async (_args, ctx) => cmdCost(ctx),
+  });
+  pi.registerCommand("vast-models", {
+    description: "hecton: list remote models; pull one with /vast-models pull <tag>",
+    handler: async (args, ctx) =>
+      cmdModels(ctx, (args ?? "").trim().split(/\s+/).filter(Boolean)),
   });
 }
