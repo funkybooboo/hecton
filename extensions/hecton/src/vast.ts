@@ -50,6 +50,8 @@ export interface VastInstance {
   status: string;
   running: boolean;
   publicIp?: string;
+  /** SSH endpoint host (vast.ai proxy like ssh5.vast.ai; falls back to publicIp). */
+  sshHost?: string;
   sshPort?: number;
   pricePerHour?: number;
 }
@@ -133,8 +135,11 @@ export function pickCheapest(offers: Offer[], filter: OfferFilter, maxPricePerHo
 
 export function instanceFromPayload(raw: unknown): VastInstance {
   const o = (raw ?? {}) as Record<string, unknown>;
-  const status =
-    str(o.cur_state) ?? str(o.actual_status) ?? str(o.status) ?? "unknown";
+  // actual_status reflects the container ("loading" while the image pulls,
+  // then "running"); cur_state reflects the contract ("running" while it
+  // merely exists). Prefer actual_status so a loading container never
+  // reads as ready.
+  const status = str(o.actual_status) ?? str(o.cur_state) ?? str(o.status) ?? "unknown";
 
   let sshPort: number | undefined;
   const ports = (o.ports ?? o.port_mappings) as Record<string, unknown> | undefined;
@@ -145,13 +150,22 @@ export function instanceFromPayload(raw: unknown): VastInstance {
     const parsed = Number(hostPort);
     if (Number.isFinite(parsed) && parsed > 0) sshPort = parsed;
   }
+  // VERIFIED live 2026-10-01: v1 instances expose dedicated ssh fields and
+  // route SSH through a proxy host (ssh5.vast.ai:<port>), not the direct IP.
+  if (sshPort == null) {
+    const p = num(o.ssh_port);
+    if (p > 0) sshPort = p;
+  }
+
+  const publicIp = str(o.public_ipaddr) ?? str(o.public_ip) ?? str(o.ipaddr);
 
   return {
     id: num(o.id),
     label: str(o.label),
     status,
-    running: /running|active/i.test(status) && !/exited|error/i.test(status),
-    publicIp: str(o.public_ipaddr) ?? str(o.public_ip) ?? str(o.ipaddr),
+    running: /running|active/i.test(status) && !/exited|error|loading/i.test(status),
+    publicIp,
+    sshHost: str(o.ssh_host) ?? publicIp,
     sshPort,
     pricePerHour: o.dph_total != null ? Number(o.dph_total) : undefined,
   };

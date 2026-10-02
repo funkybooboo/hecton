@@ -177,6 +177,29 @@ describe("instanceFromPayload", () => {
       dph_total: 1.37,
     });
     expect(inst).toMatchObject({ id: 42, running: true, publicIp: "1.2.3.4", sshPort: 40022, pricePerHour: 1.37 });
+    expect(inst.sshHost).toBe("1.2.3.4"); // falls back to publicIp
+  });
+
+  test("VERIFIED live shape: actual_status wins, loading is not running, ssh proxy fields", () => {
+    const inst = instanceFromPayload({
+      id: 53772836,
+      cur_state: "running",
+      actual_status: "loading",
+      public_ipaddr: "178.105.201.140",
+      ssh_host: "ssh5.vast.ai",
+      ssh_port: 36392,
+      dph_total: 0.7259259259259259,
+    });
+    expect(inst.status).toBe("loading");
+    expect(inst.running).toBe(false);
+    expect(inst.sshHost).toBe("ssh5.vast.ai");
+    expect(inst.sshPort).toBe(36392);
+    expect(inst.pricePerHour).toBeCloseTo(0.726, 2);
+  });
+
+  test("actual_status running with cur_state loading is running", () => {
+    const inst = instanceFromPayload({ id: 1, cur_state: "loading", actual_status: "running" });
+    expect(inst.running).toBe(true);
   });
 
   test("handles alternate field names and non-running states", () => {

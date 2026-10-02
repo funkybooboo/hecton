@@ -10,6 +10,8 @@ import { join } from "node:path";
 export interface InstanceRecord {
   id: number;
   publicIp: string;
+  /** SSH host (vast.ai proxy, e.g. ssh5.vast.ai); falls back to publicIp. */
+  sshHost?: string;
   sshPort: number;
   pricePerHour: number;
   launchedAt: number; // epoch ms

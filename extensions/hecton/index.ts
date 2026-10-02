@@ -79,7 +79,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
   let nextDestroyAttemptAt = 0; // backoff after a failed destroy
 
   const tunnelFor = (inst: InstanceRecord): SshTunnel =>
-    new SshTunnel(inst.publicIp, inst.sshPort, cfg.localPort);
+    new SshTunnel(inst.sshHost ?? inst.publicIp, inst.sshPort, cfg.localPort);
 
   const offerFilter = (): OfferFilter => ({
     gpuName: cfg.gpuName,
@@ -313,6 +313,27 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       ctx.ui.notify("hecton: no instance recorded; run /hecton-up", "warning");
       return;
     }
+    // Refresh connection details from the provider first: the launch-time
+    // payload may lack SSH details, SSH can route through a proxy whose
+    // host/port changes per instance, and dph_total on the instance is the
+    // real billing rate (offer price excludes the disk allocation).
+    const apiKey = resolveApiKey(cfg);
+    if (apiKey) {
+      const live = await new VastClient(apiKey).getInstance(state.instance.id).catch(() => undefined);
+      if (!live) {
+        ctx.ui.notify(`hecton: instance ${state.instance.id} not found on vast.ai; /hecton-up to relaunch`, "warning");
+        return;
+      }
+      if (/loading/i.test(live.status)) {
+        ctx.ui.notify("hecton: instance is still loading its container image; retry /hecton-connect in a few minutes", "warning");
+        return;
+      }
+      state.instance.publicIp = live.publicIp ?? state.instance.publicIp;
+      state.instance.sshHost = live.sshHost ?? state.instance.sshHost;
+      state.instance.sshPort = live.sshPort ?? state.instance.sshPort;
+      if (live.pricePerHour) state.instance.pricePerHour = live.pricePerHour;
+      saveState(state);
+    }
     ctx.ui.setStatus("hecton", "connecting tunnel...");
     const t = tunnelFor(state.instance);
     try {
@@ -336,7 +357,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     const models = await fetchRemoteModels(cfg.localPort);
     updateStatus(ctx);
     const lines = [
-      `endpoint http://127.0.0.1:${cfg.localPort} -> root@${state.instance.publicIp}:${state.instance.sshPort}`,
+      `endpoint http://127.0.0.1:${cfg.localPort} -> root@${state.instance.sshHost ?? state.instance.publicIp}:${state.instance.sshPort}`,
       `remote models: ${models.map((m) => m.id).join(", ") || `(still pulling: ${cfg.models.map((m) => m.id).join(", ")})`}`,
       "run /reload to refresh the provider model list, then /model to pick one",
     ];
@@ -458,8 +479,11 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
       state.instance = {
         id,
         publicIp: inst.publicIp ?? "",
+        sshHost: inst.sshHost,
         sshPort: inst.sshPort ?? 22,
-        pricePerHour: best.pricePerHour,
+        // The instance's dph_total is the real rate (includes disk);
+        // the offer price understates it.
+        pricePerHour: inst.pricePerHour ?? best.pricePerHour,
         launchedAt: Date.now(),
         image: cfg.image,
         diskGb: cfg.diskGb,
@@ -512,7 +536,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     } else {
       const { costUsd, elapsedMs } = estimateCost(inst.pricePerHour, inst.launchedAt);
       lines.push(
-        `instance ${inst.id}: ${inst.gpuName} x${inst.gpuCount} at root@${inst.publicIp}:${inst.sshPort}`,
+        `instance ${inst.id}: ${inst.gpuName} x${inst.gpuCount} at root@${inst.sshHost ?? inst.publicIp}:${inst.sshPort}`,
       );
       lines.push(
         `price ${formatUsd(inst.pricePerHour)}/hr | up ${formatElapsed(elapsedMs)} | cost so far ~${formatUsd(costUsd)}`,
