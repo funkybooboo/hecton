@@ -34,6 +34,8 @@ export interface OfferFilter {
   minGpuRamGb: number;
   /** Host must be able to allocate at least this much instance disk. */
   minDiskGb: number;
+  /** Host download speed floor; slow hosts make model pulls take an hour+. */
+  minInetDownMbps: number;
 }
 
 export interface CreateInstanceOpts {
@@ -127,6 +129,7 @@ export function pickCheapest(offers: Offer[], filter: OfferFilter, maxPricePerHo
     .filter((o) => o.numGpus === filter.gpuCount)
     .filter((o) => o.gpuRamGb >= filter.minGpuRamGb)
     .filter((o) => o.diskSpaceGb == null || o.diskSpaceGb >= filter.minDiskGb)
+    .filter((o) => (o.inetDownMbps ?? 0) >= filter.minInetDownMbps)
     .filter((o) => o.rentable !== false)
     .filter((o) => (o.reliability ?? 1) >= 0.95)
     .filter((o) => o.pricePerHour > 0 && o.pricePerHour <= maxPricePerHour);
@@ -177,6 +180,13 @@ function safeJson(x: unknown): string {
   } catch {
     return "";
   }
+}
+
+/** Prefix docker.io/ unless the image already names a registry. */
+export function fullyQualifyImage(image: string): string {
+  const firstSegment = image.split("/")[0];
+  const hasRegistryHost = firstSegment.includes(".") || firstSegment.includes(":") || firstSegment === "localhost";
+  return hasRegistryHost ? image : `docker.io/${image}`;
 }
 
 // ---------- REST client ----------
@@ -235,7 +245,10 @@ export class VastClient {
   async createInstance(offerId: number, opts: CreateInstanceOpts): Promise<number> {
     const body = {
       client_id: "me",
-      image: opts.image,
+      // Fully-qualified: on hosts that hit Docker Hub anonymous pull limits,
+      // short names sent vast.ai down a slow local-build path instead of a
+      // registry pull (observed live 2026-10-01).
+      image: fullyQualifyImage(opts.image),
       disk: opts.diskGb,
       label: opts.label,
       env: {

@@ -87,6 +87,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     minGpuRamGb: cfg.minGpuRamGb,
     // Headroom above the configured instance disk for the model cache.
     minDiskGb: cfg.diskGb + 15,
+    minInetDownMbps: cfg.minInetDownMbps,
   });
 
   const statusText = (): string | undefined => {
@@ -286,7 +287,7 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
         .slice()
         .sort((a, b) => a.pricePerHour - b.pricePerHour)
         .slice(0, 5)
-        .map((o) => `${o.gpuName} x${o.numGpus} ${Math.round(o.gpuRamGb)}GB - ${formatUsd(o.pricePerHour)}/hr (id ${o.id}, disk ${Math.round(o.diskSpaceGb ?? 0)}GB)`);
+        .map((o) => `${o.gpuName} x${o.numGpus} ${Math.round(o.gpuRamGb)}GB ${Math.round(o.inetDownMbps ?? 0)}Mbps - ${formatUsd(o.pricePerHour)}/hr (id ${o.id}, disk ${Math.round(o.diskSpaceGb ?? 0)}GB)`);
       lines.push(...(best.length > 0 ? best : ["(no offers matched the config filters)"]));
     } catch (err) {
       ctx.ui.notify(`hecton check: offer search failed: ${errDetail(err)}`, "error");

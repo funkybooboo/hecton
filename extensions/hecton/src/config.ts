@@ -64,6 +64,8 @@ export interface HectonConfig {
   warnMinutes: number;
   /** Pause the idle countdown for this long after launch / model pull. */
   pullGraceMinutes: number;
+  /** Host download speed floor in Mbps; model pulls dominate launch time. */
+  minInetDownMbps: number;
   /** Destroy the instance when pi really quits (reason "quit" only;
    * /new, /reload, forks keep it running). */
   destroyOnQuit: boolean;
@@ -100,6 +102,7 @@ const DEFAULTS: HectonConfig = {
   autoDownIdleMinutes: 10,
   warnMinutes: 5,
   pullGraceMinutes: 30,
+  minInetDownMbps: 500,
   destroyOnQuit: true,
 };
 

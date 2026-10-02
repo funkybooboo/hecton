@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { idleDecision } from "../extensions/hecton/src/auto.ts";
 import { estimateCost, formatElapsed, formatUsd, monthlySpend } from "../extensions/hecton/src/cost.ts";
 import type { CostRecord } from "../extensions/hecton/src/state.ts";
-import { instanceFromPayload, offersFromBundles, pickCheapest, type Offer } from "../extensions/hecton/src/vast.ts";
+import { fullyQualifyImage, instanceFromPayload, offersFromBundles, pickCheapest, type Offer } from "../extensions/hecton/src/vast.ts";
 
 const HOUR = 3_600_000;
 const MIN = 60_000;
@@ -119,7 +119,7 @@ describe("offersFromBundles", () => {
 });
 
 describe("pickCheapest", () => {
-  const filter = { gpuName: "H100_SXM", gpuCount: 1, minGpuRamGb: 78, minDiskGb: 50 };
+  const filter = { gpuName: "H100_SXM", gpuCount: 1, minGpuRamGb: 78, minDiskGb: 50, minInetDownMbps: 500 };
   const mk = (over: Partial<Offer>): Offer => ({
     id: 1,
     gpuName: "H100_SXM",
@@ -127,6 +127,7 @@ describe("pickCheapest", () => {
     gpuRamGb: 80,
     pricePerHour: 1.4,
     diskSpaceGb: 200,
+    inetDownMbps: 2000,
     rentable: true,
     ...over,
   });
@@ -151,6 +152,18 @@ describe("pickCheapest", () => {
       mk({ id: 14, gpuName: "RTX4090" }),
     ];
     expect(pickCheapest(offers, filter, 2)).toBeUndefined();
+  });
+
+  test("slow hosts are excluded (launch time is dominated by model pulls)", () => {
+    const offers = [mk({ id: 17, pricePerHour: 0.3, inetDownMbps: 86.5 })];
+    expect(pickCheapest(offers, filter, 2)).toBeUndefined();
+    expect(pickCheapest(offers, filter, 2)?.id).toBeUndefined();
+  });
+
+  test("fullyQualifyImage prefixes docker.io only for hub names", () => {
+    expect(fullyQualifyImage("natestott/hecton-server:latest")).toBe("docker.io/natestott/hecton-server:latest");
+    expect(fullyQualifyImage("ghcr.io/funkybooboo/hecton:latest")).toBe("ghcr.io/funkybooboo/hecton:latest");
+    expect(fullyQualifyImage("localhost/foo")).toBe("localhost/foo");
   });
 
   test("offers with unknown disk size are not excluded", () => {
