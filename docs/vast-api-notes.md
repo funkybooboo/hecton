@@ -52,12 +52,22 @@
 
 ### Instances (VERIFIED 2026-10-01)
 
-- `GET /api/v1/instances/` -> `{"instances":[...]}` (empty parse verified;
-  `/api/v0/instances/` returns 410 deprecated_endpoint).
-- `DELETE /api/v1/instances/<id>/` assumed for destroy (same version).
-- Instance field names (`cur_state`, `public_ipaddr`, `ports: {"22/tcp"})
-  still need a live instance to confirm - `instanceFromPayload` reads
-  several fallbacks defensively.
+- LIST: `GET /api/v1/instances/` -> `{"instances":[...]}` (v0 list returns
+  410 deprecated).
+- DESTROY: `DELETE /api/v0/instances/<id>/` - per-instance operations are
+  still v0! (v1 has no per-instance paths; `DELETE /api/v1/instances/<id>/`
+  404s. Found via fake-id probe returning `no_such_instance`.)
+- VERIFIED instance fields: `actual_status` (container truth: loading /
+  running / exited), `cur_state` (contract), `public_ipaddr`, `ssh_host` +
+  `ssh_port` (SSH routes through a vast.ai proxy like ssh5.vast.ai:NNNN,
+  not the direct IP; there is no ports dict), `dph_total` (the REAL billing
+  rate including disk; offer prices understate it), `label`, `inet_down`,
+  `status_msg` (live docker output while loading).
+- `new_contract` from create = the instance id (appears in the v1 list).
+- Gotcha observed: hosts can hit Docker Hub anonymous-pull limits and fall
+  back to slowly BUILDING the image instead of pulling; the picker now
+  filters by host inet_down speed and create sends docker.io/-qualified
+  image names.
 
 ### SSH
 

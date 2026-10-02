@@ -288,6 +288,8 @@ export class VastClient {
   }
 
   async destroyInstance(id: number): Promise<void> {
-    await this.call(`/api/v1/instances/${id}/`, { method: "DELETE" });
+    // VERIFIED live 2026-10-01: per-instance DELETE is v0 (fake-id probe
+    // returns no_such_instance); v1 only hosts the instances LIST.
+    await this.call(`/api/v0/instances/${id}/`, { method: "DELETE" });
   }
 }
