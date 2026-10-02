@@ -36,7 +36,7 @@ import { externalUseRecent, idleDecision } from "./src/auto.ts";
 import { estimateCost, formatElapsed, formatUsd, monthlySpend } from "./src/cost.ts";
 import { configPath, loadConfig, resolveApiKey, saveApiKeyToConfig } from "./src/config.ts";
 import { fetchRemoteModels, registerHectonProvider } from "./src/provider.ts";
-import type { InstanceRecord } from "./src/state.ts";
+import type { HectonState, InstanceRecord } from "./src/state.ts";
 import { loadState, saveState } from "./src/state.ts";
 import { SshTunnel, fetchWithTimeout, sleep } from "./src/tunnel.ts";
 import { pickCheapest, VastClient, type OfferFilter, type VastInstance } from "./src/vast.ts";
@@ -308,32 +308,43 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     widget(ctx, "hecton check (read-only):", lines);
   };
 
+  /**
+   * Refresh the recorded instance's connection details + real billing rate
+   * from the live payload. SSH can route through a vast.ai proxy whose
+   * host/port change per instance, and dph_total on the instance is the real
+   * rate (offer prices exclude the disk allocation). Returns the live
+   * instance, or undefined if unreachable.
+   */
+  const refreshInstanceDetails = async (state: HectonState): Promise<VastInstance | undefined> => {
+    const inst = state.instance;
+    if (!inst) return undefined;
+    const apiKey = resolveApiKey(cfg);
+    if (!apiKey) return undefined;
+    const live = await new VastClient(apiKey).getInstance(inst.id).catch(() => undefined);
+    if (live) {
+      inst.publicIp = live.publicIp ?? inst.publicIp;
+      inst.sshHost = live.sshHost ?? inst.sshHost;
+      inst.sshPort = live.sshPort ?? inst.sshPort;
+      if (live.pricePerHour) inst.pricePerHour = live.pricePerHour;
+      saveState(state);
+    }
+    return live;
+  };
+
   const cmdConnect = async (ctx: CmdCtx): Promise<void> => {
     const state = loadState();
     if (!state.instance) {
       ctx.ui.notify("hecton: no instance recorded; run /hecton-up", "warning");
       return;
     }
-    // Refresh connection details from the provider first: the launch-time
-    // payload may lack SSH details, SSH can route through a proxy whose
-    // host/port changes per instance, and dph_total on the instance is the
-    // real billing rate (offer price excludes the disk allocation).
-    const apiKey = resolveApiKey(cfg);
-    if (apiKey) {
-      const live = await new VastClient(apiKey).getInstance(state.instance.id).catch(() => undefined);
-      if (!live) {
-        ctx.ui.notify(`hecton: instance ${state.instance.id} not found on vast.ai; /hecton-up to relaunch`, "warning");
-        return;
-      }
-      if (/loading/i.test(live.status)) {
-        ctx.ui.notify("hecton: instance is still loading its container image; retry /hecton-connect in a few minutes", "warning");
-        return;
-      }
-      state.instance.publicIp = live.publicIp ?? state.instance.publicIp;
-      state.instance.sshHost = live.sshHost ?? state.instance.sshHost;
-      state.instance.sshPort = live.sshPort ?? state.instance.sshPort;
-      if (live.pricePerHour) state.instance.pricePerHour = live.pricePerHour;
-      saveState(state);
+    const live = await refreshInstanceDetails(state);
+    if (!live) {
+      ctx.ui.notify(`hecton: instance ${state.instance.id} not found on vast.ai; /hecton-up to relaunch`, "warning");
+      return;
+    }
+    if (/loading/i.test(live.status)) {
+      ctx.ui.notify("hecton: instance is still loading its container image; retry /hecton-connect in a few minutes", "warning");
+      return;
     }
     ctx.ui.setStatus("hecton", "connecting tunnel...");
     const t = tunnelFor(state.instance);
@@ -632,6 +643,22 @@ export default async function hecton(pi: ExtensionAPI): Promise<void> {
     lastActivityMs = state.lastHectonActivity ?? 0;
     lastPersistedActivity = lastActivityMs;
     if (!state.instance) return;
+    // Reattach with LIVE connection details - a stale record (from an older
+    // code version or a dead instance) must never drive the tunnel.
+    const live = await refreshInstanceDetails(state);
+    if (!live) {
+      if (ctx.hasUI) {
+        ctx.ui.notify(`hecton: recorded instance ${state.instance.id} no longer exists on vast.ai; /hecton-up to relaunch`, "warning");
+      }
+      return;
+    }
+    if (/loading/i.test(live.status)) {
+      if (ctx.hasUI) {
+        ctx.ui.notify("hecton: instance is still loading its container image; /hecton-connect once it is running", "warning");
+      }
+      return;
+    }
+    if (!live.running) return; // error/exited: /hecton-status reports it
     const t = tunnelFor(state.instance);
     try {
       await t.start(); // no-op when an already-healthy tunnel is present
